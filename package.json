@@ -25,7 +25,7 @@
     "ci": "npm run lint && npm run format:check && npm run typecheck && npm run test:coverage && npm run check-config && npm run build"
   },
   "dependencies": {
-    "googleapis": "^144.0.0",
+    "googleapis": "^188.0.0",
     "openai": "^4.77.0",
     "pino": "^9.5.0",
     "yaml": "^2.6.1",
