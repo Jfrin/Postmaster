@@ -25,11 +25,11 @@
     "ci": "npm run lint && npm run format:check && npm run typecheck && npm run test:coverage && npm run check-config && npm run build"
   },
   "dependencies": {
-    "googleapis": "^144.0.0",
-    "openai": "^4.77.0",
+    "googleapis": "^188.0.0",
+    "openai": "^7.45.1",
     "pino": "^9.5.0",
     "yaml": "^2.6.1",
-    "zod": "^3.24.1"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

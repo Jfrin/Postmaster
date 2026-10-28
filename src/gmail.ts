@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { google, type gmail_v1 } from 'googleapis';
-import type { OAuth2Client } from 'google-auth-library';
+import { google, type Auth, type gmail_v1 } from 'googleapis';
+
+type OAuth2Client = Auth.OAuth2Client;
 import { cleanBody, parseAddress } from './text.js';
 import type { EmailMessage, MailClient, ModifyRequest } from './types.js';
 

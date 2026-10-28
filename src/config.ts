@@ -46,7 +46,7 @@ const CategorySchema = z
 
 export const ConfigSchema = z
   .object({
-    settings: SettingsSchema.default({}),
+    settings: SettingsSchema.prefault({}),
     rules: z.array(RuleSchema).default([]),
     categories: z.array(CategorySchema).min(1),
   })
