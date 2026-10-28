@@ -1,5 +1,5 @@
 # dev: full toolchain. Used by the ci, test, auth, undo and eval compose services.
-FROM node:24-slim AS dev
+FROM node:25-slim AS dev
 WORKDIR /srv
 RUN chown node:node /srv
 USER node
@@ -13,7 +13,7 @@ FROM dev AS build
 RUN npm run build
 
 # runtime (default target): production deps and compiled JS only
-FROM node:24-slim AS runtime
+FROM node:25-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /srv
 COPY package.json package-lock.json ./
