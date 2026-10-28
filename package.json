@@ -1,0 +1,46 @@
+{
+  "name": "postmaster",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Gmail auto-labeler: rules first, cheap Azure AI Foundry model second, config in YAML.",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "check-config": "tsx src/main.ts --check-config",
+    "auth": "tsx scripts/auth.ts",
+    "undo": "tsx scripts/undo.ts",
+    "eval": "tsx scripts/eval.ts",
+    "ci": "npm run lint && npm run format:check && npm run typecheck && npm run test:coverage && npm run check-config && npm run build"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0",
+    "openai": "^4.77.0",
+    "pino": "^9.5.0",
+    "yaml": "^2.6.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.2",
+    "@vitest/coverage-v8": "^2.1.8",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.2",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,116 @@
+import { describe, expect, it } from 'vitest';
+import {
+  AzureClassifier,
+  MockClassifier,
+  parseModelOutput,
+  responseSchema,
+  systemPrompt,
+  userPrompt,
+  type ChatClient,
+} from '../src/classifier.js';
+import { makeConfig, makeMessage } from './helpers.js';
+
+const cats = makeConfig().categories;
+
+function fakeClient(
+  replies: (string | null)[],
+): ChatClient & { requests: Record<string, unknown>[] } {
+  const requests: Record<string, unknown>[] = [];
+  return {
+    requests,
+    chat: {
+      completions: {
+        create: (args) => {
+          requests.push(args);
+          return Promise.resolve({ choices: [{ message: { content: replies.shift() ?? null } }] });
+        },
+      },
+    },
+  };
+}
+
+describe('prompt building', () => {
+  it('builds the system prompt from the category list', () => {
+    const p = systemPrompt(cats);
+    expect(p).toContain('- receipts: Orders');
+    expect(p).toContain('untrusted');
+  });
+
+  it('includes sender, subject, unsubscribe flag and body, nothing else', () => {
+    const p = userPrompt(makeMessage({ hasListUnsubscribe: true }));
+    expect(p).toContain('From: Shop <orders@shop.example>');
+    expect(p).toContain('List-Unsubscribe header: yes');
+  });
+
+  it('restricts category to configured ids', () => {
+    expect(responseSchema(cats).properties.category.enum).toEqual([
+      'receipts',
+      'dev',
+      'needs_review',
+    ]);
+  });
+});
+
+describe('parseModelOutput', () => {
+  it('accepts valid output', () => {
+    const out = parseModelOutput('{"category":"dev","confidence":0.8,"reason":"x"}', cats);
+    expect(out.category).toBe('dev');
+  });
+
+  it.each([
+    [
+      'unknown category (prompt injection cannot invent one)',
+      '{"category":"delete_all","confidence":1,"reason":""}',
+    ],
+    ['confidence out of range', '{"category":"dev","confidence":3,"reason":""}'],
+    ['not json', 'sure! it is dev'],
+  ])('rejects %s', (_name, raw) => {
+    expect(() => parseModelOutput(raw, cats)).toThrow();
+  });
+});
+
+describe('AzureClassifier', () => {
+  const good = '{"category":"receipts","confidence":0.93,"reason":"shipping"}';
+
+  it('calls the model at temperature 0 with a strict json schema', async () => {
+    const client = fakeClient([good]);
+    const out = await new AzureClassifier(client, 'dep').classify(makeMessage(), cats);
+    expect(out.category).toBe('receipts');
+    expect(client.requests[0]).toMatchObject({ model: 'dep', temperature: 0 });
+    expect(JSON.stringify(client.requests[0])).toContain('"strict":true');
+  });
+
+  it('retries once on invalid output', async () => {
+    const client = fakeClient(['nope', good]);
+    const out = await new AzureClassifier(client, 'dep').classify(makeMessage(), cats);
+    expect(out.confidence).toBe(0.93);
+    expect(client.requests).toHaveLength(2);
+  });
+
+  it('throws after two invalid replies', async () => {
+    const client = fakeClient(['nope', null]);
+    await expect(new AzureClassifier(client, 'dep').classify(makeMessage(), cats)).rejects.toThrow(
+      /invalid output twice/,
+    );
+  });
+
+  it('fromEnv demands the three Azure variables', () => {
+    expect(() => AzureClassifier.fromEnv({})).toThrow(/AZURE_OPENAI_ENDPOINT/);
+    expect(() =>
+      AzureClassifier.fromEnv({
+        AZURE_OPENAI_ENDPOINT: 'https://x.openai.azure.com',
+        AZURE_OPENAI_API_KEY: 'k',
+        AZURE_OPENAI_DEPLOYMENT: 'd',
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe('MockClassifier', () => {
+  it('matches keywords and falls back with low confidence', async () => {
+    const m = new MockClassifier();
+    expect((await m.classify(makeMessage(), cats)).category).toBe('receipts');
+    const none = await m.classify(makeMessage({ subject: 'hi', body: 'hello' }), cats);
+    expect(none.confidence).toBeLessThan(0.5);
+  });
+});

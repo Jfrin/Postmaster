@@ -1,0 +1,8 @@
+.env
+secrets/
+data/
+node_modules/
+dist/
+coverage/
+eval/dataset.jsonl
+*.log

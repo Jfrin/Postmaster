@@ -1,0 +1,10 @@
+.env
+secrets/
+data/
+node_modules/
+dist/
+coverage/
+.git
+.github
+eval/
+docs/

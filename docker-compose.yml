@@ -1,0 +1,55 @@
+x-tool: &tool
+  build: { context: ., target: dev }
+  env_file: [{ path: .env, required: false }]
+  profiles: [tools]
+
+services:
+  postmaster:
+    build: { context: ., target: runtime }
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./config:/srv/config:ro
+      - ./secrets:/srv/secrets
+      - ./data:/srv/data
+    healthcheck:
+      # unhealthy if the heartbeat file has not been touched for 15 minutes (3 poll cycles)
+      test: ['CMD-SHELL', 'find /srv/data/heartbeat -mmin -15 | grep -q .']
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 2m
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+  # docker compose run --rm ci      lint, format, typecheck, tests, config check, build
+  ci:
+    <<: *tool
+    command: npm run ci
+
+  # docker compose run --rm test
+  test:
+    <<: *tool
+    command: npm test
+
+  # docker compose run --rm --service-ports auth     one-time Google login, writes secrets/token.json
+  auth:
+    <<: *tool
+    ports: ['3000:3000']
+    volumes: ['./secrets:/srv/secrets']
+    command: npx tsx scripts/auth.ts
+
+  # docker compose run --rm undo 2026-10-28T00:00:00Z
+  undo:
+    <<: *tool
+    entrypoint: ['npx', 'tsx', 'scripts/undo.ts']
+    volumes: ['./config:/srv/config:ro', './secrets:/srv/secrets', './data:/srv/data']
+
+  # docker compose run --rm eval --mock
+  eval:
+    <<: *tool
+    entrypoint: ['npx', 'tsx', 'scripts/eval.ts']
+    volumes: ['./config:/srv/config:ro', './eval:/srv/eval:ro']
