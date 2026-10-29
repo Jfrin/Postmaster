@@ -166,30 +166,41 @@ postmaster/
 ```
 
 ```dockerfile
-# --- build stage: compile TypeScript ---
-FROM node:24-slim AS build
+# dev: full toolchain. Used by the ci, test, auth, undo and eval compose services.
+FROM node:24-slim AS dev
 WORKDIR /srv
-COPY package.json package-lock.json ./
+RUN chown node:node /srv
+USER node
+COPY --chown=node:node package.json package-lock.json ./
 RUN npm ci
-COPY tsconfig.json tsconfig.build.json ./
-COPY src/ ./src/
+COPY --chown=node:node . .
+CMD ["npm", "run", "ci"]
+
+# build: compile TypeScript
+FROM dev AS build
 RUN npm run build
 
-# --- runtime stage: production deps and compiled JS only ---
-FROM node:24-slim
+# runtime (default target): production deps and compiled JS only
+FROM node:24-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /srv
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /srv/dist ./dist
+# The built-in "node" user is uid 1000, so it can write ./data on a typical Linux VM.
 USER node
 CMD ["node", "dist/main.js"]
 ```
 
 ```yaml
+x-tool: &tool
+  build: { context: ., target: dev }
+  env_file: [{ path: .env, required: false }]
+  profiles: [tools]
+
 services:
   postmaster:
-    build: .
+    build: { context: ., target: runtime }
     restart: unless-stopped
     env_file: .env
     volumes:
@@ -197,6 +208,7 @@ services:
       - ./secrets:/srv/secrets
       - ./data:/srv/data
     healthcheck:
+      # unhealthy if the heartbeat file has not been touched for 15 minutes (3 poll cycles)
       test: ["CMD-SHELL", "find /srv/data/heartbeat -mmin -15 | grep -q ."]
       interval: 1m
       timeout: 10s
@@ -204,15 +216,47 @@ services:
       start_period: 2m
     logging:
       driver: json-file
-      options: { max-size: "10m", max-file: "3" }
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # docker compose run --rm ci      lint, format, typecheck, tests, config check, build
+  ci:
+    <<: *tool
+    command: npm run ci
+
+  # docker compose run --rm test
+  test:
+    <<: *tool
+    command: npm test
+
+  # docker compose run --rm --service-ports auth     one-time Google login, writes secrets/token.json
+  auth:
+    <<: *tool
+    ports: ["3000:3000"]
+    volumes: ["./secrets:/srv/secrets"]
+    command: npx tsx scripts/auth.ts
+
+  # docker compose run --rm undo 2026-10-28T00:00:00Z
+  undo:
+    <<: *tool
+    entrypoint: ["npx", "tsx", "scripts/undo.ts"]
+    volumes: ["./config:/srv/config:ro", "./secrets:/srv/secrets", "./data:/srv/data"]
+
+  # docker compose run --rm eval --mock
+  eval:
+    <<: *tool
+    entrypoint: ["npx", "tsx", "scripts/eval.ts"]
+    volumes: ["./config:/srv/config:ro", "./eval:/srv/eval:ro"]
 ```
 
-- **Libraries:** `googleapis`, `openai` (its `AzureOpenAI` client), `zod`, `yaml` and `pino`. SQLite comes from Node's built-in `node:sqlite`, so there is no native build step in the image. It is still marked experimental in Node, so pin the Node major version and keep `state.ts` well tested; `better-sqlite3` is the fallback.
+- **Libraries:** `@googleapis/gmail` (Gmail only; the full `googleapis` package makes `tsc` run out of memory in small Docker VMs), `google-auth-library`, `openai` (its `AzureOpenAI` client), `zod`, `yaml` and `pino`. SQLite comes from Node's built-in `node:sqlite`, so there is no native build step in the image. It is still marked experimental in Node, so pin the Node major version and keep `state.ts` well tested; `better-sqlite3` is the fallback.
 - **Dev tooling:** `typescript`, `tsx`, `vitest`, `eslint` with `typescript-eslint`, and `prettier`. Compiled output goes to `dist/`; the runtime image holds only production dependencies and `dist/`.
 - **Permissions:** the official Node image's `node` user is uid 1000, so it can write `./data` on a typical Linux VM where your login user is also uid 1000. The `secrets` mount is writable so a refreshed token can be saved back; `config` stays read-only.
 - **Never baked in:** put `secrets/`, `data/` and `.env` in both `.gitignore` and `.dockerignore`.
 - **Health:** the loop touches a heartbeat file in `data/` each cycle; the compose healthcheck marks the container unhealthy if it goes 15 minutes stale.
 - **Shutdown:** the loop sleeps in one-second slices and exits cleanly on SIGTERM, so `docker compose stop` is quick and never interrupts a Gmail call halfway.
+- **Everything in Docker:** `docker compose run --rm ci|test|auth|undo|eval` runs the tooling in a `dev` image target, so nothing needs Node installed on the host. The default `runtime` target stays lean.
 - **Local first:** run `docker compose up` on your own machine with `dry_run: true` and read the logs before touching a VM.
 
 ## Testing and CI
@@ -329,7 +373,7 @@ Check items off as you go. These phases are finer-grained than the five-phase ro
 - [ ] Create a private repo named `postmaster` and run `git init`
 - [x] Add `.gitignore` (`.env`, `secrets/`, `data/`, `node_modules/`, `dist/`, `coverage/`) and a matching `.dockerignore`
 - [x] Set up a TypeScript project on Node 24 with `package.json` (ESM), strict `tsconfig.json`, ESLint with `typescript-eslint`, Prettier and Vitest
-- [x] Add dependencies: `googleapis`, `openai`, `zod`, `yaml`, `pino`; dev: `typescript`, `tsx`, `vitest`, `@vitest/coverage-v8`, `eslint`, `prettier`
+- [x] Add dependencies: `@googleapis/gmail`, `google-auth-library`, `openai`, `zod`, `yaml`, `pino`; dev: `typescript`, `tsx`, `vitest`, `@vitest/coverage-v8`, `eslint`, `prettier`
 - [x] Add npm scripts: `build`, `typecheck`, `lint`, `format:check`, `test`, `test:coverage`, `check-config` and `ci` (runs them all)
 - [x] Create `.env.example` with `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT` and `POSTMASTER_MOCK`
 

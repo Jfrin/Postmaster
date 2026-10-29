@@ -1,8 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { google, type Auth, type gmail_v1 } from 'googleapis';
-
-type OAuth2Client = Auth.OAuth2Client;
+import { gmail as gmailApi, type gmail_v1 } from '@googleapis/gmail';
+import { OAuth2Client } from 'google-auth-library';
 import { cleanBody, parseAddress } from './text.js';
 import type { EmailMessage, MailClient, ModifyRequest } from './types.js';
 
@@ -11,7 +10,7 @@ export const SCOPES = ['https://www.googleapis.com/auth/gmail.modify'];
 export function oauthClientFromSecrets(secretsDir: string): OAuth2Client {
   const creds = JSON.parse(readFileSync(join(secretsDir, 'credentials.json'), 'utf8'));
   const c = creds.installed ?? creds.web;
-  const client = new google.auth.OAuth2(c.client_id, c.client_secret, c.redirect_uris?.[0]);
+  const client = new OAuth2Client(c.client_id, c.client_secret, c.redirect_uris?.[0]);
   const tokenPath = join(secretsDir, 'token.json');
   client.setCredentials(JSON.parse(readFileSync(tokenPath, 'utf8')));
   // Persist refreshed tokens. Needs a writable secrets mount, so a read-only mount only logs.
@@ -57,7 +56,7 @@ export class GmailClient implements MailClient {
   constructor(private readonly gmail: gmail_v1.Gmail) {}
 
   static fromAuth(auth: OAuth2Client): GmailClient {
-    return new GmailClient(google.gmail({ version: 'v1', auth }));
+    return new GmailClient(gmailApi({ version: 'v1', auth }));
   }
 
   async ensureLabels(names: string[], create: boolean): Promise<Map<string, string>> {

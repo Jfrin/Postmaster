@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { gmail_v1 } from 'googleapis';
+import type { gmail_v1 } from '@googleapis/gmail';
 import { extractBody, GmailClient } from '../src/gmail.js';
 
 const b64 = (s: string) => Buffer.from(s).toString('base64url');

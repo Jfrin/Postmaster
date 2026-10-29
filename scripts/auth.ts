@@ -1,14 +1,14 @@
 // Run once on your laptop: npm run auth. Writes secrets/token.json, then copy it to the VM.
 import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { google } from 'googleapis';
+import { OAuth2Client } from 'google-auth-library';
 import { SCOPES } from '../src/gmail.js';
 
 const PORT = 3000;
 const creds = JSON.parse(readFileSync('secrets/credentials.json', 'utf8'));
 const c = creds.installed ?? creds.web;
 const redirect = `http://localhost:${PORT}`;
-const client = new google.auth.OAuth2(c.client_id, c.client_secret, redirect);
+const client = new OAuth2Client(c.client_id, c.client_secret, redirect);
 
 const url = client.generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: SCOPES });
 console.log(`Open this URL and approve access:\n\n${url}\n`);
