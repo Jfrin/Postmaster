@@ -164,6 +164,12 @@ export async function runCycle(base: BaseContext): Promise<CycleStats> {
       stopped = true;
       break;
     }
+    // Messages already decided in an earlier run (or an earlier cycle) are not even fetched
+    // again. Live mode still lets a dry-run decision through so going live files it.
+    if (state.hasDecision(id, !config.settings.dry_run)) {
+      base.hooks?.onProgress?.(++done, ids.length);
+      continue;
+    }
     try {
       const msg = await mail.fetchMessage(id, config.settings.max_body_chars);
       if ((await processMessage(ctx, msg)) !== 'skipped') processed++;

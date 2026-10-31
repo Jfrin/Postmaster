@@ -77,6 +77,58 @@ function originAllowed(origin: string): boolean {
   }
 }
 
+/**
+ * Server-sent events for the Activity tab. The UI server and the poller share the same
+ * SQLite file, so this only has to read the decision log and push it to the browser.
+ */
+function streamActivity(deps: UiDeps, res: ServerResponse, limit: number): void {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  let closed = false;
+  let config: ReturnType<typeof loadConfigFile> | null = null;
+  try {
+    config = loadConfigFile(deps.configPath);
+  } catch {
+    // Reported in the payload below until the file is fixed.
+  }
+  const tick = (): void => {
+    if (closed || res.writableEnded) return;
+    try {
+      config = loadConfigFile(deps.configPath);
+    } catch {
+      // Keep using the last good config, if any.
+    }
+    const payload = {
+      decisions: deps.state.recent(limit),
+      llmCallsToday: deps.state.llmCallsToday(new Date()),
+      dailyCap: config?.settings.daily_llm_call_cap ?? 0,
+      dryRun: config?.settings.dry_run ?? true,
+      mode: deps.mode,
+      run: runStatus(deps),
+      ...(config ? {} : { error: 'config file is invalid' }),
+    };
+    try {
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } catch {
+      closed = true;
+    }
+  };
+  tick();
+  const timer = setInterval(tick, 1000);
+  res.on('close', () => {
+    closed = true;
+    clearInterval(timer);
+  });
+  res.on('error', () => {
+    closed = true;
+    clearInterval(timer);
+  });
+}
+
 async function handle(deps: UiDeps, req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!LOCAL_HOST.test(req.headers.host ?? '')) return send(res, 403, { error: 'forbidden host' });
   const method = req.method ?? 'GET';
@@ -128,6 +180,11 @@ async function handle(deps: UiDeps, req: IncomingMessage, res: ServerResponse): 
       dryRun: config.settings.dry_run,
       mode: deps.mode,
     });
+  }
+
+  if (method === 'GET' && url.pathname === '/api/activity/stream') {
+    streamActivity(deps, res, 200);
+    return;
   }
 
   if (method === 'POST' && url.pathname === '/api/try') {

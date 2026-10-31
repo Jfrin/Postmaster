@@ -3,6 +3,7 @@ import { request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import vm from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MockClassifier } from '../src/classifier.js';
 import { loadConfigFile } from '../src/config.js';
@@ -44,6 +45,13 @@ describe('UI server', () => {
     const res = await fetch(base);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain('<title>Postmaster</title>');
+  });
+
+  it('serves a page whose inline script parses', async () => {
+    const html = await (await fetch(base)).text();
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    expect(script).toBeTruthy();
+    expect(() => new vm.Script(script!)).not.toThrow();
   });
 
   it('returns the config', async () => {
@@ -109,6 +117,25 @@ describe('UI server', () => {
     };
     expect(d.decisions[0]).toMatchObject({ sender: 'a@b.com', subject: 'Hello' });
     expect(d.dailyCap).toBe(5);
+  });
+
+  it('streams decisions over server-sent events', async () => {
+    state.recordDecision(
+      'm1',
+      { category: 'receipts', confidence: 0.9, source: 'model', reason: 'r' },
+      true,
+      new Date(),
+      { sender: 'stream@b.com', subject: 'Live' },
+    );
+    const res = await fetch(`${base}/api/activity/stream`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+    const reader = res.body!.getReader();
+    const { value } = await reader.read();
+    const text = new TextDecoder().decode(value);
+    await reader.cancel();
+    expect(text).toContain('data: ');
+    expect(text).toContain('stream@b.com');
   });
 
   it('"Try it" uses rules first, then the classifier, and changes no state', async () => {

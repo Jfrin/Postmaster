@@ -59,6 +59,7 @@ td.trunc{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowr
 var ACTIONS=['label','star','mark_read','archive'];
 var TABS=[['activity','Activity'],['categories','Categories'],['rules','Rules'],['settings','Settings'],['try','Try it']];
 var cfg=null,dirty=false,tab='activity',timer=null,toastTimer=null,runState=null;
+var activitySource=null,activityItems=[],lastActivitySig='',processedIds=readProcessedIds();
 
 function h(tag,props){
   var e=document.createElement(tag),val,hasVal=false,chk,hasChk=false;
@@ -93,6 +94,20 @@ function catSelect(value,onchange){
 }
 function field(label,input,hint){return h('div',null,h('label',null,label),input,hint?h('div',{class:'hint'},hint):null)}
 
+/* ---------- Activity bookkeeping ---------- */
+var ACTIVITY_KEY='postmaster.activity.processed';
+function readProcessedIds(){
+  try{var raw=localStorage.getItem(ACTIVITY_KEY);var a=raw?JSON.parse(raw):[];return Array.isArray(a)?a:[]}catch(e){return[]}
+}
+function saveProcessedIds(){
+  // Keep the list bounded so localStorage cannot grow forever.
+  if(processedIds.length>2000)processedIds=processedIds.slice(-2000);
+  try{localStorage.setItem(ACTIVITY_KEY,JSON.stringify(processedIds))}catch(e){}
+}
+function markProcessed(x){
+  if(x&&x.message_id&&processedIds.indexOf(x.message_id)<0){processedIds.push(x.message_id);saveProcessedIds()}
+}
+
 /* ---------- Start / Stop ---------- */
 function drawRun(){
   var b=$('#run'),btn=$('#runbtn');
@@ -120,30 +135,83 @@ async function toggleRun(){
 }
 
 /* ---------- Activity ---------- */
-async function activity(){
-  var root=$('#main');
-  var d=await api('/api/decisions?limit=100');
+function activityRows(decisions){
+  return h('div',{class:'card',style:'overflow-x:auto'},h('table',null,
+    h('thead',null,h('tr',null,['Time','From','Subject','Category','Conf.','How','Result'].map(function(t){return h('th',null,t)}))),
+    h('tbody',null,decisions.map(function(x){return h('tr',null,
+      h('td',{class:'muted'},new Date(x.created_at).toLocaleString()),
+      h('td',{class:'trunc',title:x.sender||''},x.sender||''),
+      h('td',{class:'trunc',title:x.subject||''},x.subject||'(no subject)'),
+      h('td',null,catLabel(x.category)),
+      h('td',null,Math.round(x.confidence*100)+'%'),
+      h('td',{title:x.reason},x.source),
+      h('td',{class:x.applied?'':'muted'},x.applied?'applied':'dry run'))}))));
+}
+
+function renderActivity(d){
   if(tab!=='activity')return;
-  var counts={};d.decisions.forEach(function(x){counts[x.category]=(counts[x.category]||0)+1});
-  fill(root,
-    runState&&runState.status&&runState.status.lastError?h('div',{class:'card',style:'color:var(--bad);white-space:pre-wrap'},'Last error: '+runState.status.lastError):null,
+  // Only show decisions we have not already seen. The ids live in localStorage, so a page
+  // reload (or a second browser tab) does not reprocess the same list again.
+  var fresh=[];
+  (d.decisions||[]).forEach(function(x){
+    if(x&&x.message_id&&processedIds.indexOf(x.message_id)<0){fresh.push(x);markProcessed(x)}
+  });
+  if(fresh.length){
+    activityItems=fresh.concat(activityItems);
+    if(activityItems.length>100)activityItems=activityItems.slice(0,100);
+  }
+  var counts={};activityItems.forEach(function(x){counts[x.category]=(counts[x.category]||0)+1});
+  var st=(d.run&&d.run.status)||(runState&&runState.status)||{};
+  var sig=JSON.stringify({error:st.lastError||'',cycle:st.lastCycle||null,calls:d.llmCallsToday,cap:d.dailyCap,mode:d.mode,ids:activityItems.map(function(x){return x.message_id})});
+  if(sig===lastActivitySig)return;
+  lastActivitySig=sig;
+  fill($('#main'),
+    st.lastError?h('div',{class:'card',style:'color:var(--bad);white-space:pre-wrap'},'Last error: '+st.lastError):null,
     h('div',{class:'card'},
-      runState&&runState.status&&runState.status.lastCycle?h('span',{class:'chip'},'Last check: '+runState.status.lastCycle.seen+' seen, '+runState.status.lastCycle.processed+' handled, '+runState.status.lastCycle.failed+' failed'+(runState.status.lastCycle.dryRun?' (dry run)':'')):null,
+      st.lastCycle?h('span',{class:'chip'},'Last check: '+st.lastCycle.seen+' seen, '+st.lastCycle.processed+' handled, '+st.lastCycle.failed+' failed'+(st.lastCycle.dryRun?' (dry run)':'')):null,
       h('span',{class:'chip'},'Model calls today: '+d.llmCallsToday+' / '+d.dailyCap),
       h('span',{class:'chip'},'Classifier for Try it: '+d.mode),
       Object.keys(counts).map(function(k){return h('span',{class:'chip'},catLabel(k)+': '+counts[k])}),
-      h('div',{class:'hint'},'Last '+d.decisions.length+' decisions. Refreshes every 8 seconds.')),
-    d.decisions.length?h('div',{class:'card',style:'overflow-x:auto'},h('table',null,
-      h('thead',null,h('tr',null,['Time','From','Subject','Category','Conf.','How','Result'].map(function(t){return h('th',null,t)}))),
-      h('tbody',null,d.decisions.map(function(x){return h('tr',null,
-        h('td',{class:'muted'},new Date(x.created_at).toLocaleString()),
-        h('td',{class:'trunc',title:x.sender||''},x.sender||''),
-        h('td',{class:'trunc',title:x.subject||''},x.subject||'(no subject)'),
-        h('td',null,catLabel(x.category)),
-        h('td',null,Math.round(x.confidence*100)+'%'),
-        h('td',{title:x.reason},x.source),
-        h('td',{class:x.applied?'':'muted'},x.applied?'applied':'dry run'))}))))
-    :h('div',{class:'card muted'},'No decisions yet. Press Start at the top to begin, or use the Try it tab.'));
+      h('div',{class:'hint'},'Showing '+activityItems.length+' new decisions. Live updates. ',h('button',{class:'ghost',style:'margin-left:8px',onclick:function(){
+        processedIds=[];saveProcessedIds();activityItems=[];lastActivitySig='';activity().catch(function(e){toast(e.message,true)});
+      }},'Show all'))),
+    activityItems.length?activityRows(activityItems)
+      :h('div',{class:'card muted'},'No new decisions. Press Start at the top to begin, or use the Try it tab.'));
+}
+
+async function activity(){
+  var d=await api('/api/decisions?limit=200');
+  renderActivity(d);
+}
+
+function stopActivityStream(){
+  if(activitySource){activitySource.close();activitySource=null}
+}
+
+function startActivityStream(){
+  stopActivityStream();
+  if(!('EventSource' in window)){
+    // Very old browsers: fall back to a one-second poll, still deduplicated above.
+    activity().catch(function(e){toast(e.message,true)});
+    timer=setInterval(function(){activity().catch(function(){})},1000);
+    return;
+  }
+  activitySource=new EventSource('/api/activity/stream');
+  activitySource.onmessage=function(e){
+    try{
+      var d=JSON.parse(e.data);
+      if(d.error)return; // keep the last good view; the config tab explains how to fix it
+      renderActivity(d);
+    }catch(err){}
+  };
+  activitySource.onerror=function(){
+    // EventSource reconnects on its own while the server is reachable. Only fall back if it
+    // has closed for good.
+    if(activitySource&&activitySource.readyState===EventSource.CLOSED){
+      stopActivityStream();
+      timer=setInterval(function(){activity().catch(function(){})},2000);
+    }
+  };
 }
 
 /* ---------- Categories ---------- */
@@ -243,9 +311,9 @@ function tryIt(){
 
 /* ---------- shell ---------- */
 function render(){
-  clearInterval(timer);header();
+  clearInterval(timer);timer=null;stopActivityStream();lastActivitySig='';header();
   fill($('#tabs'),TABS.map(function(t){return h('button',{class:tab===t[0]?'on':'',onclick:function(){tab=t[0];render()}},t[1])}));
-  if(tab==='activity'){activity().catch(function(e){toast(e.message,true)});timer=setInterval(function(){activity().catch(function(){})},8000)}
+  if(tab==='activity'){startActivityStream()}
   else if(tab==='categories')categories();else if(tab==='rules')rules();else if(tab==='settings')settings();else tryIt();
 }
 function prune(){

@@ -197,6 +197,44 @@ describe('runCycle', () => {
     expect(ctx.state.getCursor()).toBe('100');
   });
 
+  it('does not fetch messages that were already decided in an earlier run', async () => {
+    const mail = new FakeMail();
+    mail.add(makeMessage({ id: 'a' }));
+    const state = new State(':memory:');
+    state.recordDecision(
+      'a',
+      { category: 'receipts', confidence: 1, source: 'model', reason: 'already done' },
+      true,
+      new Date('2026-10-28T09:00:00Z'),
+    );
+    let fetches = 0;
+    const originalFetch = mail.fetchMessage.bind(mail);
+    mail.fetchMessage = (id: string) => {
+      fetches++;
+      return originalFetch(id);
+    };
+    const stats = await runCycle(makeContext({ mail, state }));
+    expect(stats).toEqual({ seen: 1, processed: 0, failed: 0 });
+    expect(fetches).toBe(0);
+    expect(mail.modifies).toHaveLength(0);
+    expect(state.getCursor()).toBe('100');
+  });
+
+  it('still processes a dry-run decision when the next run goes live', async () => {
+    const mail = new FakeMail();
+    mail.add(makeMessage({ id: 'a' }));
+    const state = new State(':memory:');
+    state.recordDecision(
+      'a',
+      { category: 'receipts', confidence: 1, source: 'model', reason: 'dry run only' },
+      false,
+      new Date('2026-10-28T09:00:00Z'),
+    );
+    const stats = await runCycle(makeContext({ mail, state }));
+    expect(stats).toEqual({ seen: 1, processed: 1, failed: 0 });
+    expect(mail.modifies).toHaveLength(1);
+  });
+
   it('does not create labels in dry run', async () => {
     const mail = new FakeMail();
     mail.add(makeMessage());
