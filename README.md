@@ -1,6 +1,6 @@
 # Postmaster
 
-Gmail auto-labeler. Rules first, a cheap Azure AI Foundry model second, every category and rule in `config/categories.yaml`. See the project plan for the full design.
+Gmail auto-labeler. Rules first, a cheap Azure AI Foundry model second, every category and rule in `config/categories.yaml`. The safe shipped default lives in `config/categories.default.yaml`; your live config is `config/categories.yaml`. See the project plan for the full design.
 
 ## Run it (Docker only, no Node on your machine)
 
@@ -11,7 +11,7 @@ cp .env.example .env                  # fill in Azure values, or set POSTMASTER_
 docker compose run --rm ci            # lint, format, typecheck, tests, config check, build
 docker compose run --rm --service-ports auth   # one-time login, writes secrets/token.json
 docker compose up -d --build          # starts the containers, but Postmaster stays idle
-# open http://localhost:8080 and press Start (dry_run is true by default)
+# open http://localhost:8080 and press Start
 docker compose logs -f                # read the decisions
 ```
 
@@ -34,12 +34,12 @@ When a day of logs looks right, set `dry_run: false` in `config/categories.yaml`
 docker compose up -d ui     # then open http://localhost:8080
 ```
 
-Recent decisions, editable categories, rules and settings, and a "Try it" box that shows how a pasted email would be sorted without touching Gmail. Saving rewrites `config/categories.yaml` (the old version is kept as `categories.yaml.bak`, comments are not preserved) and Postmaster picks it up on its next poll cycle. The port is published on 127.0.0.1 only and there is no login, so do not expose it.
+Recent decisions, editable categories, rules and settings, and a "Try it" box that shows how a pasted email would be sorted without touching Gmail. Saving rewrites your live `config/categories.yaml` (the old version is kept as `categories.yaml.bak`, comments are not preserved) and Postmaster picks it up on its next poll cycle. The shipped default is never touched. The port is published on 127.0.0.1 only and there is no login, so do not expose it.
 
 ## Testing approach
 
 - `MailClient` and `Classifier` are interfaces; tests use fakes, so the whole pipeline runs offline.
 - Gmail is tested against a mocked service object, Azure against a fake chat client.
-- The shipped `categories.yaml` is loaded in a test, so a typo fails CI before it ships.
+- The shipped `config/categories.default.yaml` is loaded in a test, so a typo fails CI before it ships. CI never reads your live `config/categories.yaml`, so local settings cannot break the build.
 - Safety properties have explicit tests: dry run changes nothing, no delete action exists, call cap holds, processing is idempotent, injected categories are rejected.
 - Use synthetic emails only. Never commit real mail, `.env` or `secrets/`.

@@ -7,8 +7,10 @@ import { silentLogger } from '../src/logger.js';
 import { YAML } from './helpers.js';
 
 describe('config schema', () => {
-  it('loads the shipped config/categories.yaml (catches typos before they ship)', () => {
-    const cfg = loadConfigFile('config/categories.yaml');
+  it('loads the shipped default config (catches typos before they ship)', () => {
+    // The live config/categories.yaml is user-owned and edited by the UI, so CI
+    // validates the stable default instead. Local changes must never break CI.
+    const cfg = loadConfigFile('config/categories.default.yaml');
     expect(cfg.categories.length).toBeGreaterThan(5);
     expect(cfg.settings.dry_run).toBe(true); // safe by default
   });
