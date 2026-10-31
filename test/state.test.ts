@@ -35,6 +35,14 @@ describe('State', () => {
     expect(s.appliedSince('2026-01-01T00:00:00Z')).toHaveLength(0);
   });
 
+  it('replaces a dry-run decision when the message is applied', () => {
+    const s = new State(':memory:');
+    s.recordDecision('m1', D, false, NOW);
+    s.recordDecision('m1', { ...D, category: 'content_filtered' }, true, NOW);
+    expect(s.hasDecision('m1', true)).toBe(true);
+    expect(s.appliedSince('2026-01-01T00:00:00Z')[0]?.category).toBe('content_filtered');
+  });
+
   it('caches a sender only after three consistent high-confidence results', () => {
     const s = new State(':memory:');
     s.observeSender('a@x.com', 'receipts', 0.95);

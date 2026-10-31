@@ -31,6 +31,13 @@ describe('config schema', () => {
     expect(() => parseConfig(YAML.replace('id: needs_review', 'id: other'))).toThrow(/fallback/);
   });
 
+  it('reserves the content-filtered category id and label', () => {
+    expect(() => parseConfig(YAML.replace('id: dev', 'id: content_filtered'))).toThrow(/reserved/);
+    expect(() => parseConfig(YAML.replace('label: Dev', 'label: Content Filtered'))).toThrow(
+      /reserved/,
+    );
+  });
+
   it('rejects an absurd backlog window that Gmail cannot search', () => {
     expect(() =>
       parseConfig(YAML.replace('dry_run: false', 'backlog_days: 999999999999999')),

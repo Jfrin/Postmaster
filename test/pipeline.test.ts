@@ -8,7 +8,11 @@ import {
   runCycle,
   type PipelineContext,
 } from '../src/pipeline.js';
-import { InvalidModelOutputError } from '../src/classifier.js';
+import {
+  AzureClassifier,
+  ContentFilteredError,
+  InvalidModelOutputError,
+} from '../src/classifier.js';
 import { FakeClassifier, FakeMail, makeConfig, makeContext, makeMessage } from './helpers.js';
 
 function live(ctx: ReturnType<typeof makeContext>): PipelineContext & { mail: FakeMail } {
@@ -18,6 +22,7 @@ function live(ctx: ReturnType<typeof makeContext>): PipelineContext & { mail: Fa
       ['receipts', 'L_r'],
       ['dev', 'L_d'],
       ['needs_review', 'L_n'],
+      ['content_filtered', 'L_f'],
     ]),
   };
 }
@@ -67,6 +72,49 @@ describe('processMessage', () => {
     const ctx = live(makeContext({ classifier }));
     expect(await processMessage(ctx, makeMessage())).toBe('applied');
     expect(ctx.mail.modifies[0]?.change.add).toEqual(['L_n']);
+  });
+
+  it('labels content-filtered messages separately, without sender learning or other actions', async () => {
+    const classifier = new FakeClassifier(new ContentFilteredError('filtered'));
+    const ctx = live(makeContext({ classifier }));
+    expect(await processMessage(ctx, makeMessage())).toBe('applied');
+    expect(ctx.mail.modifies[0]?.change).toEqual({ add: ['L_f'], remove: [] });
+    expect(ctx.state.recent(1)[0]).toMatchObject({
+      category: 'content_filtered',
+      source: 'fallback',
+      reason: 'Azure content filtered',
+      applied: 1,
+    });
+    expect(ctx.state.cachedCategory('orders@shop.example')).toBeNull();
+    expect(classifier.lastCategoryIds).not.toContain('content_filtered');
+    expect(await processMessage(ctx, makeMessage())).toBe('skipped');
+  });
+
+  it('does not record a filtered decision if its label is missing or Gmail fails', async () => {
+    const classifier = new FakeClassifier(new ContentFilteredError('filtered'));
+    const ctx = live(makeContext({ classifier }));
+    ctx.labelIds.delete('content_filtered');
+    await expect(processMessage(ctx, makeMessage())).rejects.toThrow(/label is unavailable/);
+    expect(ctx.state.hasDecision('m1')).toBe(false);
+    ctx.labelIds.set('content_filtered', 'L_f');
+    ctx.mail.modify = () => Promise.reject(new Error('Gmail failed'));
+    await expect(processMessage(ctx, makeMessage())).rejects.toThrow(/Gmail failed/);
+    expect(ctx.state.hasDecision('m1')).toBe(false);
+  });
+
+  it('records a dry-run filtered decision and updates it when applied live', async () => {
+    const classifier = new FakeClassifier(new ContentFilteredError('filtered'));
+    const state = new State(':memory:');
+    const dry = live(
+      makeContext({ config: makeConfig((c) => (c.settings.dry_run = true)), state, classifier }),
+    );
+    expect(await processMessage(dry, makeMessage())).toBe('dry_run');
+    expect(dry.mail.modifies).toHaveLength(0);
+    expect(state.recent(1)[0]?.applied).toBe(0);
+    const active = live(makeContext({ state, classifier }));
+    expect(await processMessage(active, makeMessage())).toBe('applied');
+    expect(state.recent(1)[0]).toMatchObject({ category: 'content_filtered', applied: 1 });
+    expect(state.appliedSince('2000-01-01T00:00:00Z')).toHaveLength(1);
   });
 
   it('dry run logs a decision but changes nothing in Gmail', async () => {
@@ -188,6 +236,37 @@ describe('only_if_unread categories', () => {
 });
 
 describe('runCycle', () => {
+  it('creates the filtered label and advances the cursor after filing a blocked message', async () => {
+    const mail = new FakeMail();
+    mail.add(makeMessage());
+    const classifier = new FakeClassifier(new ContentFilteredError('filtered'));
+    const ctx = makeContext({ mail, classifier });
+    expect(await runCycle(ctx)).toEqual({ seen: 1, processed: 1, failed: 0 });
+    expect(mail.createdLabels).toContain('AI/Content Filtered');
+    expect(mail.modifies[0]?.change).toEqual({ add: ['L_AI/Content Filtered'], remove: [] });
+    expect(ctx.state.getCursor()).toBe('100');
+    expect(await runCycle(ctx)).toEqual({ seen: 1, processed: 0, failed: 0 });
+  });
+
+  it('files an Azure structured content-filter error end to end', async () => {
+    const mail = new FakeMail();
+    mail.add(makeMessage());
+    const client = {
+      chat: {
+        completions: {
+          create: () =>
+            Promise.reject(
+              Object.assign(new Error('blocked'), { status: 400, code: 'content_filter' }),
+            ),
+        },
+      },
+    };
+    const ctx = makeContext({ mail, classifier: new AzureClassifier(client, 'deployment') });
+    expect(await runCycle(ctx)).toEqual({ seen: 1, processed: 1, failed: 0 });
+    expect(mail.modifies[0]?.change).toEqual({ add: ['L_AI/Content Filtered'], remove: [] });
+    expect(ctx.state.recent(1)[0]?.reason).toBe('Azure content filtered');
+  });
+
   it('ends the cycle on Gmail quota exhaustion, draining writes and preserving retry state', async () => {
     const mail = new FakeMail();
     for (let i = 0; i < 20; i++) mail.add(makeMessage({ id: `m${i}` }));
@@ -412,5 +491,6 @@ describe('runCycle', () => {
 describe('labelName', () => {
   it('prefixes the configured label', () => {
     expect(labelName(makeConfig(), 'receipts')).toBe('AI/Receipts');
+    expect(labelName(makeConfig(), 'content_filtered')).toBe('AI/Content Filtered');
   });
 });

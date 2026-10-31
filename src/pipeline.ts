@@ -1,5 +1,5 @@
-import type { Config } from './config.js';
-import { InvalidModelOutputError, type Classifier } from './classifier.js';
+import { CONTENT_FILTERED_CATEGORY, CONTENT_FILTERED_LABEL, type Config } from './config.js';
+import { ContentFilteredError, InvalidModelOutputError, type Classifier } from './classifier.js';
 import { GmailQuotaError } from './gmail-quota.js';
 import type { Logger } from './logger.js';
 import { matchRule } from './rules.js';
@@ -39,6 +39,9 @@ export interface PipelineContext extends BaseContext {
 export type Outcome = 'skipped' | 'dry_run' | 'applied';
 
 export function labelName(config: Config, categoryId: string): string {
+  if (categoryId === CONTENT_FILTERED_CATEGORY) {
+    return `${config.settings.label_prefix}${CONTENT_FILTERED_LABEL}`;
+  }
   const cat = config.categories.find((c) => c.id === categoryId);
   return `${config.settings.label_prefix}${cat?.label ?? categoryId}`;
 }
@@ -109,6 +112,15 @@ export async function decide(ctx: PipelineContext, msg: EmailMessage): Promise<D
     }
     return { ...result, source: 'model' };
   } catch (err) {
+    if (err instanceof ContentFilteredError) {
+      log.warn({ id: msg.id }, 'Azure content filter, filing separately');
+      return {
+        category: CONTENT_FILTERED_CATEGORY,
+        confidence: 0,
+        source: 'fallback',
+        reason: 'Azure content filtered',
+      };
+    }
     if (err instanceof InvalidModelOutputError) {
       // The model answered nonsense (or was steered by the email). Filing it for review is safe.
       log.warn({ err: String(err), id: msg.id }, 'invalid model output, using fallback');
@@ -138,8 +150,12 @@ export async function processMessage(ctx: PipelineContext, msg: EmailMessage): P
   const decision = await decide(ctx, msg);
   const category = config.categories.find((c) => c.id === decision.category);
   const actions = category?.actions ?? ['label'];
-  const change = buildModify(actions, ctx.labelIds.get(decision.category));
   const dry = config.settings.dry_run;
+  const labelId = ctx.labelIds.get(decision.category);
+  if (!dry && decision.category === CONTENT_FILTERED_CATEGORY && !labelId) {
+    throw new Error('content-filtered label is unavailable');
+  }
+  const change = buildModify(actions, labelId);
 
   log.info(
     { id: msg.id, ...decision, actions, dry_run: dry },
@@ -160,6 +176,7 @@ export async function runCycle(base: BaseContext): Promise<CycleStats> {
   // Labels are created only when not in dry run, so a dry run changes nothing in Gmail.
   // Done every cycle so flipping dry_run to false needs no restart.
   const names = new Map(config.categories.map((c) => [labelName(config, c.id), c.id]));
+  names.set(labelName(config, CONTENT_FILTERED_CATEGORY), CONTENT_FILTERED_CATEGORY);
   const found = await mail.ensureLabels([...names.keys()], !config.settings.dry_run);
   const labelIds = new Map<string, string>();
   for (const [name, id] of found) {

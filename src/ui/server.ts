@@ -2,9 +2,10 @@ import { copyFileSync, existsSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { stringify } from 'yaml';
 import { z } from 'zod';
-import type { Classifier } from '../classifier.js';
-import { ConfigSchema, loadConfigFile } from '../config.js';
+import { ContentFilteredError, type Classifier } from '../classifier.js';
+import { CONTENT_FILTERED_CATEGORY, ConfigSchema, loadConfigFile } from '../config.js';
 import { heartbeatAgeMs, readControl, readStatus, writeControl } from '../control.js';
+import { labelName } from '../pipeline.js';
 import { matchRule } from '../rules.js';
 import type { State } from '../state.js';
 import { cleanBody, parseAddress } from '../text.js';
@@ -217,13 +218,21 @@ async function handle(deps: UiDeps, req: IncomingMessage, res: ServerResponse): 
           source: low ? 'fallback (below confidence threshold)' : 'model',
         };
       } catch (err) {
-        return send(res, 502, { error: `classifier failed: ${String(err)}` });
+        if (!(err instanceof ContentFilteredError)) {
+          return send(res, 502, { error: `classifier failed: ${String(err)}` });
+        }
+        result = {
+          category: CONTENT_FILTERED_CATEGORY,
+          confidence: 0,
+          source: 'fallback',
+          reason: 'Azure content filtered',
+        };
       }
     }
     const cat = config.categories.find((c) => c.id === result.category);
     return send(res, 200, {
       ...result,
-      label: `${config.settings.label_prefix}${cat?.label ?? result.category}`,
+      label: labelName(config, result.category),
       actions: cat?.actions ?? ['label'],
       mode: deps.mode,
     });

@@ -12,6 +12,9 @@ export interface ModelResult {
 /** The model answered, but not with a valid category. Safe to file under the fallback. */
 export class InvalidModelOutputError extends Error {}
 
+/** Azure explicitly blocked the prompt or completion under its content policy. */
+export class ContentFilteredError extends Error {}
+
 export interface Classifier {
   classify(msg: EmailMessage, categories: Category[]): Promise<ModelResult>;
 }
@@ -74,7 +77,7 @@ export interface ChatClient {
   chat: {
     completions: {
       create(args: Record<string, unknown>): Promise<{
-        choices: { message: { content: string | null } }[];
+        choices: { message: { content: string | null }; finish_reason?: string | null }[];
       }>;
     };
   };
@@ -131,7 +134,11 @@ export class AzureClassifier implements Classifier {
           },
         });
       } catch (err) {
+        if (isContentFilterError(err)) throw new ContentFilteredError('Azure content filter');
         throw this.explain(err);
+      }
+      if (res.choices[0]?.finish_reason === 'content_filter') {
+        throw new ContentFilteredError('Azure content filter');
       }
       try {
         return parseModelOutput(res.choices[0]?.message.content ?? '', categories);
@@ -159,6 +166,13 @@ export class AzureClassifier implements Classifier {
     }
     return err instanceof Error ? err : new Error(String(err));
   }
+}
+
+/** Only recognize Azure's structured error code, never a generic 400 or message text. */
+function isContentFilterError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { status?: unknown; code?: unknown; error?: { code?: unknown } };
+  return e.status === 400 && (e.code === 'content_filter' || e.error?.code === 'content_filter');
 }
 
 /** Keyword classifier so tests, demos and CI run with no API key. */

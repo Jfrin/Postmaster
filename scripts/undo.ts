@@ -1,6 +1,6 @@
 // Remove labels applied since a time: npm run undo -- 2026-10-28T00:00:00Z
 // Only reverses the label (restores INBOX and UNREAD for archived or read mail too).
-import { loadConfigFile } from '../src/config.js';
+import { CONTENT_FILTERED_CATEGORY, loadConfigFile } from '../src/config.js';
 import { GmailClient, oauthClientFromSecrets } from '../src/gmail.js';
 import { labelName } from '../src/pipeline.js';
 import { State } from '../src/state.js';
@@ -15,6 +15,7 @@ const state = new State(`${process.env.DATA_DIR ?? 'data'}/state.db`);
 const mail = GmailClient.fromAuth(oauthClientFromSecrets(process.env.SECRETS_DIR ?? 'secrets'));
 
 const names = config.categories.map((cat) => labelName(config, cat.id));
+names.push(labelName(config, CONTENT_FILTERED_CATEGORY));
 const ids = await mail.ensureLabels(names, false);
 const rows = state.appliedSince(new Date(since).toISOString());
 for (const row of rows) {

@@ -1,47 +1,117 @@
 # Postmaster
 
-Gmail auto-labeler. Rules first, a cheap Azure AI Foundry model second, every category and rule in `config/categories.yaml`. The safe shipped default lives in `config/categories.default.yaml`; your live config is `config/categories.yaml`. See the project plan for the full design.
+**An AI-assisted Gmail organizer built for control, resilience, and safe automation.**
 
-## Run it (Docker only, no Node on your machine)
+Postmaster classifies incoming email using configurable rules, a learned sender cache, and Azure OpenAI. It applies Gmail labels and optional actions based on the result, with a local dashboard for reviewing decisions and managing the pipeline.
 
-```bash
-cp .env.example .env                  # fill in Azure values, or set POSTMASTER_MOCK=1
-# put your Google OAuth client in secrets/credentials.json
+**TypeScript · Node.js · Gmail API · Azure OpenAI · SQLite · Docker**
 
-docker compose run --rm ci            # lint, format, typecheck, tests, config check, build
-docker compose run --rm --service-ports auth   # one-time login, writes secrets/token.json
-docker compose up -d --build          # starts the containers, but Postmaster stays idle
-# open http://localhost:8080 and press Start
-docker compose logs -f                # read the decisions
+## Highlights
+
+- **Hybrid classification:** checks deterministic rules and cached sender decisions before calling the model, reducing unnecessary API requests.
+- **Guarded AI output:** treats email as untrusted input, restricts model responses to configured categories with a JSON schema, and routes low-confidence or invalid results to a fallback category.
+- **Safe operation:** supports dry runs, configurable actions, an LLM call cap, and explicit Start/Stop controls. The application has no send or delete action.
+- **Resilient processing:** persists decisions and Gmail history cursors in SQLite, skips already-processed messages, and retries failures without advancing the cursor prematurely.
+- **Quota-aware Gmail access:** limits request usage and backs off when Gmail throttles requests.
+- **Local dashboard:** inspect recent activity, edit categories and rules, adjust settings, and test sample emails without modifying Gmail.
+
+## How it works
+
+```text
+Gmail inbox
+  ├─ Matching rule ────────────────────────┐
+  ├─ Eligible sender cache ────────────────┤
+  └─ Azure OpenAI → confidence check ──────┤
+                                           ↓
+                              Gmail labels / actions
+                                           ↓
+                            SQLite + local dashboard
 ```
 
-When a day of logs looks right, set `dry_run: false` in `config/categories.yaml` (no restart needed).
+1. **Discover:** scan the configured inbox lookback on Start, then use Gmail history to find new messages.
+2. **Classify:** apply the first matching rule, use an eligible sender-cache result, or request a structured model classification.
+3. **Decide:** route low-confidence or invalid responses to the configured fallback; respect category-specific actions and unread-only restrictions.
+4. **Apply and record:** modify Gmail in live mode and store the decision. Dry runs record decisions without changing Gmail.
 
-| Command                                        | What it does                                            |
-| ---------------------------------------------- | ------------------------------------------------------- |
-| `docker compose run --rm test`                 | Tests only                                              |
-| `docker compose run --rm ci`                   | Everything CI runs                                      |
-| `docker compose run --rm undo <ISO timestamp>` | Remove labels applied since a time                      |
-| `docker compose run --rm eval --mock`          | Accuracy and confusion matrix over `eval/dataset.jsonl` |
+Azure content-filter blocks are filed separately under **AI/Content Filtered** (with your configured label prefix), without archiving or marking the message read. These decisions are treated as processed, not automatically retried. Other Azure errors remain retryable. The ID `content_filtered` and label `Content Filtered` are reserved for this built-in outcome.
 
-## Start and Stop
+## Getting started
 
-Gmail requests share a quota-unit limiter (4,800 units/minute initially). If Gmail throttles the account, Postmaster preserves progress, waits at least a minute (or Gmail's `Retry-After`), and retries on a later check at a reduced rate. Repeated throttling increases the cooldown.
+### Prerequisites
 
-`docker compose up` never starts processing your mail by itself. Every time the containers start, Postmaster is **stopped** until you press **Start** in the UI. **Start** scans the configured inbox lookback, skipping already-processed emails, then checks new arrivals on the poll interval. Changing the lookback triggers another inbox scan on the next check. **Stop** finishes in-flight emails and then pauses. If something is missing (for example `secrets/token.json`), pressing Start shows what to fix instead of crashing.
+- Docker and Docker Compose
+- A Google Cloud project with the Gmail API enabled and an OAuth client. Place the downloaded client JSON at `secrets/credentials.json`; configure the OAuth consent screen and test users as needed.
+- An Azure OpenAI endpoint, API key, and deployment name, or the built-in mock classifier.
 
-## Admin UI
+Postmaster requests the Gmail `gmail.modify` OAuth scope. Mock mode avoids Azure calls but still requires Gmail credentials to process email.
 
-```bash
-docker compose up -d ui     # then open http://localhost:8080
+### Setup
+
+1. Create the environment file and configure Azure, or set `POSTMASTER_MOCK=1`:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Put your Google OAuth client in `secrets/credentials.json`, then authorize Gmail:
+
+   ```bash
+   docker compose run --rm --service-ports auth
+   ```
+
+   Open the URL printed by the command and approve access. The token is saved to `secrets/token.json`.
+
+3. Review `config/categories.yaml` and set `settings.dry_run: true` before the first run. The shipped reference configuration is `config/categories.default.yaml`.
+
+4. Build and start the containers:
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+5. Open [http://localhost:8080](http://localhost:8080) and press **Start**. Review the dry-run decisions before setting `dry_run: false` in the UI or live configuration. Configuration changes take effect on the next poll cycle.
+
+Postmaster starts **stopped** after each container restart. **Start** scans the configured lookback and skips processed messages; **Stop** finishes in-flight work before pausing.
+
+## Configuration
+
+Categories, rules, and settings live in `config/categories.yaml` and can also be edited in the dashboard. Categories define labels, descriptions, examples, actions, and optional unread-only eligibility. Settings include the confidence threshold, fallback category, poll interval, lookback, body length, and daily LLM call cap.
+
+Supported actions are `label`, `star`, `mark_read`, and `archive`. Choose actions carefully: live mode can change read and inbox status. Saving from the UI rewrites the live YAML, preserves the previous version as `categories.yaml.bak`, and removes YAML comments. The shipped default is not changed.
+
+## Commands
+
+| Command                                        | Purpose                                                           |
+| ---------------------------------------------- | ----------------------------------------------------------------- |
+| `docker compose logs -f`                       | Follow application logs                                           |
+| `docker compose run --rm test`                 | Run tests                                                         |
+| `docker compose run --rm ci`                   | Run lint, format check, typecheck, coverage, config check, build  |
+| `docker compose run --rm undo <ISO timestamp>` | Undo recorded labels and configured category actions since a time |
+| `docker compose run --rm eval --mock`          | Evaluate the mock classifier against a local dataset              |
+
+The undo command modifies Gmail: it removes recorded labels and may restore inbox or unread status based on the current category configuration. It is not a snapshot of the message's original state.
+
+For evaluation, create `eval/dataset.jsonl` with one synthetic example per line, for example:
+
+```json
+{
+  "from": "orders@example.com",
+  "subject": "Your order shipped",
+  "body": "Your package is on its way.",
+  "label": "receipts"
+}
 ```
 
-Recent decisions, editable categories, rules and settings, and a "Try it" box that shows how a pasted email would be sorted without touching Gmail. Saving rewrites your live `config/categories.yaml` (the old version is kept as `categories.yaml.bak`, comments are not preserved) and Postmaster picks it up on its next poll cycle. The shipped default is never touched. The port is published on 127.0.0.1 only and there is no login, so do not expose it.
+The report includes accuracy and a confusion matrix. Omit `--mock` to evaluate the configured Azure deployment.
 
-## Testing approach
+## Architecture and testing
 
-- `MailClient` and `Classifier` are interfaces; tests use fakes, so the whole pipeline runs offline.
-- Gmail is tested against a mocked service object, Azure against a fake chat client.
-- The shipped `config/categories.default.yaml` is loaded in a test, so a typo fails CI before it ships. CI never reads your live `config/categories.yaml`, so local settings cannot break the build.
-- Safety properties have explicit tests: dry run changes nothing, no delete action exists, call cap holds, processing is idempotent, injected categories are rejected.
-- Use synthetic emails only. Never commit real mail, `.env` or `secrets/`.
+The application separates the Gmail client, classifier, pipeline, and persistent state behind testable interfaces. The dashboard and poller run as separate containers and share local state. Configuration is validated with Zod; logs are structured with Pino.
+
+Vitest exercises the pipeline offline using fake mail and classifier implementations, with mocked Gmail and Azure clients. Tests cover dry-run behavior, idempotency, retry and quota handling, call limits, configuration validation, and model output validation.
+
+## Privacy and security
+
+- With Azure enabled, message metadata and a cleaned, truncated body are sent to the configured Azure deployment for classification. Review your Azure configuration and policies before processing sensitive mail.
+- The dashboard binds to `127.0.0.1` and has no login. Do not expose it publicly.
+- Keep `.env`, `secrets/`, `data/`, and real email datasets private. Use synthetic examples in tests and never commit credentials or real email.

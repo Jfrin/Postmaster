@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AzureClassifier,
+  ContentFilteredError,
   InvalidModelOutputError,
   MockClassifier,
   parseModelOutput,
@@ -92,6 +93,49 @@ describe('AzureClassifier', () => {
     const client = fakeClient(['nope', null]);
     await expect(new AzureClassifier(client, 'dep').classify(makeMessage(), cats)).rejects.toThrow(
       InvalidModelOutputError,
+    );
+  });
+
+  it.each([
+    { status: 400, code: 'content_filter' },
+    { status: 400, error: { code: 'content_filter' } },
+  ])('recognizes structured Azure content filter errors: %j', async (details) => {
+    const error = Object.assign(new Error('blocked'), details);
+    const client: ChatClient = { chat: { completions: { create: () => Promise.reject(error) } } };
+    await expect(new AzureClassifier(client, 'dep').classify(makeMessage(), cats)).rejects.toThrow(
+      ContentFilteredError,
+    );
+  });
+
+  it('recognizes a filtered completion without retrying', async () => {
+    let calls = 0;
+    const client: ChatClient = {
+      chat: {
+        completions: {
+          create: () => {
+            calls++;
+            return Promise.resolve({
+              choices: [{ message: { content: null }, finish_reason: 'content_filter' }],
+            });
+          },
+        },
+      },
+    };
+    await expect(new AzureClassifier(client, 'dep').classify(makeMessage(), cats)).rejects.toThrow(
+      ContentFilteredError,
+    );
+    expect(calls).toBe(1);
+  });
+
+  it.each([
+    { status: 400, code: 'invalid_request_error' },
+    { status: 429, code: 'content_filter' },
+    { status: 400 },
+  ])('does not mistake other API errors for content filtering: %j', async (details) => {
+    const error = Object.assign(new Error('content filter'), details);
+    const client: ChatClient = { chat: { completions: { create: () => Promise.reject(error) } } };
+    await expect(new AzureClassifier(client, 'dep').classify(makeMessage(), cats)).rejects.toBe(
+      error,
     );
   });
 

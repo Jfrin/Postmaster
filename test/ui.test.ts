@@ -4,8 +4,8 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MockClassifier } from '../src/classifier.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ContentFilteredError, MockClassifier } from '../src/classifier.js';
 import { loadConfigFile } from '../src/config.js';
 import { readControl, touchHeartbeat } from '../src/control.js';
 import { State } from '../src/state.js';
@@ -173,6 +173,29 @@ describe('UI server', () => {
       body: '{"from":1}',
     });
     expect(res.status).toBe(400);
+  });
+
+  it('shows a content-filtered outcome in "Try it" without changing state', async () => {
+    const classify = vi
+      .spyOn(MockClassifier.prototype, 'classify')
+      .mockRejectedValueOnce(new ContentFilteredError('filtered'));
+    try {
+      const res = await fetch(`${base}/api/try`, {
+        method: 'POST',
+        headers: json,
+        body: JSON.stringify({ from: 'x@example.com', subject: 's', body: 'b' }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        category: 'content_filtered',
+        label: 'AI/Content Filtered',
+        actions: ['label'],
+        reason: 'Azure content filtered',
+      });
+      expect(state.recent(10)).toHaveLength(0);
+    } finally {
+      classify.mockRestore();
+    }
   });
 
   it('blocks non-localhost Host headers (DNS rebinding)', async () => {

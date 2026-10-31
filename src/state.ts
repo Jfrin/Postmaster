@@ -97,7 +97,7 @@ export class State {
       .get(this.userId, messageId);
   }
 
-  /** Idempotent on (user_id, message_id): a retried message is never double-recorded. */
+  /** Preserve applied decisions, but replace a dry-run decision when it is applied live. */
   recordDecision(
     messageId: string,
     d: Decision,
@@ -107,9 +107,14 @@ export class State {
   ): void {
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO decisions
+        `INSERT INTO decisions
          (user_id, message_id, category, confidence, source, reason, applied, created_at, sender, subject)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (user_id, message_id) DO UPDATE SET
+           category = excluded.category, confidence = excluded.confidence, source = excluded.source,
+           reason = excluded.reason, applied = excluded.applied, created_at = excluded.created_at,
+           sender = excluded.sender, subject = excluded.subject
+         WHERE decisions.applied = 0 AND excluded.applied = 1`,
       )
       .run(
         this.userId,

@@ -5,6 +5,10 @@ import type { Logger } from './logger.js';
 
 const ID = /^[a-z][a-z0-9_]*$/;
 
+/** Reserved for messages Azure refuses to classify, not a model-selectable category. */
+export const CONTENT_FILTERED_CATEGORY = 'content_filtered';
+export const CONTENT_FILTERED_LABEL = 'Content Filtered';
+
 const SettingsSchema = z
   .object({
     label_prefix: z.string().default('AI/'),
@@ -60,6 +64,20 @@ export const ConfigSchema = z
     for (const id of ids) {
       if (seen.has(id)) ctx.addIssue({ code: 'custom', message: `duplicate category id: ${id}` });
       seen.add(id);
+    }
+    if (cfg.categories.some((c) => c.id === CONTENT_FILTERED_CATEGORY)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `category id "${CONTENT_FILTERED_CATEGORY}" is reserved`,
+      });
+    }
+    if (
+      cfg.categories.some((c) => c.label.toLowerCase() === CONTENT_FILTERED_LABEL.toLowerCase())
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `category label "${CONTENT_FILTERED_LABEL}" is reserved`,
+      });
     }
     if (!seen.has(cfg.settings.fallback_category)) {
       ctx.addIssue({
