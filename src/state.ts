@@ -67,6 +67,8 @@ export class State {
     );
     if (!cols.includes('sender')) {
       this.db.exec('ALTER TABLE decisions ADD COLUMN sender TEXT');
+    }
+    if (!cols.includes('subject')) {
       this.db.exec('ALTER TABLE decisions ADD COLUMN subject TEXT');
     }
   }
@@ -163,15 +165,15 @@ export class State {
         .run(this.userId, sender);
       return;
     }
-    const row = this.db
-      .prepare('SELECT category, streak FROM sender_cache WHERE user_id = ? AND sender = ?')
-      .get(this.userId, sender) as { category: string; streak: number } | undefined;
-    const streak = row && row.category === category ? row.streak + 1 : 1;
     this.db
       .prepare(
-        'INSERT OR REPLACE INTO sender_cache (user_id, sender, category, streak) VALUES (?, ?, ?, ?)',
+        `INSERT INTO sender_cache (user_id, sender, category, streak) VALUES (?, ?, ?, 1)
+         ON CONFLICT(user_id, sender) DO UPDATE SET
+           streak = CASE WHEN sender_cache.category = excluded.category
+             THEN sender_cache.streak + 1 ELSE 1 END,
+           category = excluded.category`,
       )
-      .run(this.userId, sender, category, streak);
+      .run(this.userId, sender, category);
   }
 
   llmCallsToday(now: Date): number {

@@ -1,10 +1,12 @@
 import { CONTENT_FILTERED_CATEGORY, CONTENT_FILTERED_LABEL, type Config } from './config.js';
-import { ContentFilteredError, InvalidModelOutputError, type Classifier } from './classifier.js';
+import type { Classifier } from './classifier.js';
 import { GmailQuotaError } from './gmail-quota.js';
 import type { Logger } from './logger.js';
-import { matchRule } from './rules.js';
+import { decide, localDecision } from './pipeline-decision.js';
 import type { State } from './state.js';
-import type { Action, Decision, EmailMessage, MailClient, ModifyRequest } from './types.js';
+import type { Action, EmailMessage, MailClient, ModifyRequest } from './types.js';
+
+export { decide } from './pipeline-decision.js';
 
 export interface CycleHooks {
   /** Stops scheduling messages; already in-flight cached writes finish before returning. */
@@ -56,85 +58,6 @@ export function buildModify(actions: Action[], labelId: string | undefined): Mod
     if (action === 'archive') change.remove.push('INBOX');
   }
   return change;
-}
-
-function allowedCategories(config: Config, msg: EmailMessage) {
-  // A category marked only_if_unread is not offered for mail that is already read: no rule, no
-  // cache hit and no model answer can put it there.
-  const unread = msg.labelIds.includes('UNREAD');
-  return config.categories.filter((c) => unread || !c.only_if_unread);
-}
-
-function localDecision(ctx: PipelineContext, msg: EmailMessage): Decision | null {
-  const { config, state } = ctx;
-  const allowed = allowedCategories(config, msg);
-  const allowedIds = new Set(allowed.map((c) => c.id));
-
-  const rule = matchRule(
-    config.rules.filter((r) => allowedIds.has(r.category)),
-    msg,
-  );
-  if (rule) {
-    return { category: rule.category, confidence: 1, source: 'rule', reason: 'matched rule' };
-  }
-
-  const cached = state.cachedCategory(msg.address);
-  if (cached && allowedIds.has(cached)) {
-    return { category: cached, confidence: 1, source: 'cache', reason: 'sender cache' };
-  }
-  return null;
-}
-
-export async function decide(ctx: PipelineContext, msg: EmailMessage): Promise<Decision> {
-  const { config, state, classifier, log } = ctx;
-  const { settings } = config;
-  const local = localDecision(ctx, msg);
-  if (local) return local;
-  const allowed = allowedCategories(config, msg);
-
-  const now = ctx.now();
-  if (state.llmCallsToday(now) >= settings.daily_llm_call_cap) {
-    log.warn({ cap: settings.daily_llm_call_cap }, 'daily LLM call cap reached');
-    return {
-      category: settings.fallback_category,
-      confidence: 0,
-      source: 'fallback',
-      reason: 'daily call cap reached',
-    };
-  }
-
-  state.countLlmCall(now);
-  try {
-    const result = await classifier.classify(msg, allowed);
-    state.observeSender(msg.address, result.category, result.confidence);
-    if (result.confidence < settings.confidence_threshold) {
-      return { ...result, category: settings.fallback_category, source: 'fallback' };
-    }
-    return { ...result, source: 'model' };
-  } catch (err) {
-    if (err instanceof ContentFilteredError) {
-      log.warn({ id: msg.id }, 'Azure content filter, filing separately');
-      return {
-        category: CONTENT_FILTERED_CATEGORY,
-        confidence: 0,
-        source: 'fallback',
-        reason: 'Azure content filtered',
-      };
-    }
-    if (err instanceof InvalidModelOutputError) {
-      // The model answered nonsense (or was steered by the email). Filing it for review is safe.
-      log.warn({ err: String(err), id: msg.id }, 'invalid model output, using fallback');
-      return {
-        category: settings.fallback_category,
-        confidence: 0,
-        source: 'fallback',
-        reason: 'invalid model output',
-      };
-    }
-    // Anything else (bad key, wrong deployment, network, rate limit) is not the email's fault.
-    // Do not record a decision: rethrow so the message is retried on the next cycle.
-    throw err;
-  }
 }
 
 export async function processMessage(ctx: PipelineContext, msg: EmailMessage): Promise<Outcome> {

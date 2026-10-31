@@ -2,9 +2,11 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gmail as gmailApi, type gmail_v1 } from '@googleapis/gmail';
 import { OAuth2Client } from 'google-auth-library';
+import { parseGmailMessage } from './gmail-message.js';
 import { GmailQuota } from './gmail-quota.js';
-import { cleanBody, parseAddress } from './text.js';
 import type { EmailMessage, MailClient, ModifyRequest } from './types.js';
+
+export { extractBody } from './gmail-message.js';
 
 export const SCOPES = ['https://www.googleapis.com/auth/gmail.modify'];
 
@@ -24,32 +26,6 @@ export function oauthClientFromSecrets(secretsDir: string): OAuth2Client {
     }
   });
   return client;
-}
-
-function header(msg: gmail_v1.Schema$Message, name: string): string {
-  const h = msg.payload?.headers?.find((x) => x.name?.toLowerCase() === name.toLowerCase());
-  return h?.value ?? '';
-}
-
-function decode(data: string): string {
-  return Buffer.from(data, 'base64url').toString('utf8');
-}
-
-/** Prefer text/plain; fall back to text/html. */
-export function extractBody(part: gmail_v1.Schema$MessagePart | undefined): {
-  text: string;
-  isHtml: boolean;
-} {
-  let plain = '';
-  let html = '';
-  const walk = (p: gmail_v1.Schema$MessagePart | undefined) => {
-    if (!p) return;
-    if (p.mimeType === 'text/plain' && p.body?.data && !plain) plain = decode(p.body.data);
-    else if (p.mimeType === 'text/html' && p.body?.data && !html) html = decode(p.body.data);
-    p.parts?.forEach(walk);
-  };
-  walk(part);
-  return plain ? { text: plain, isHtml: false } : { text: html, isHtml: true };
 }
 
 export class GmailClient implements MailClient {
@@ -99,33 +75,43 @@ export class GmailClient implements MailClient {
 
     if (cursor) {
       try {
-        const ids = new Set<string>();
-        let pageToken: string | undefined;
-        do {
-          const res = await this.quota.run(2, () =>
-            this.gmail.users.history.list(
-              {
-                userId: 'me',
-                startHistoryId: cursor,
-                historyTypes: ['messageAdded'],
-                labelId: 'INBOX',
-                pageToken,
-              },
-              { retry: false },
-            ),
-          );
-          for (const h of res.data.history ?? []) {
-            for (const m of h.messagesAdded ?? []) if (m.message?.id) ids.add(m.message.id);
-          }
-          pageToken = res.data.nextPageToken ?? undefined;
-        } while (pageToken);
-        return { ids: [...ids], cursor: newCursor };
+        return { ids: await this.listHistory(cursor), cursor: newCursor };
       } catch (err) {
         // Gmail drops old history (404). Fall through to the recent-mail scan.
         if ((err as { code?: number }).code !== 404) throw err;
       }
     }
 
+    return { ids: await this.listBacklog(backlogDays), cursor: newCursor };
+  }
+
+  private async listHistory(cursor: string): Promise<string[]> {
+    const ids = new Set<string>();
+    let pageToken: string | undefined;
+    do {
+      const res = await this.quota.run(2, () =>
+        this.gmail.users.history.list(
+          {
+            userId: 'me',
+            startHistoryId: cursor,
+            historyTypes: ['messageAdded'],
+            labelId: 'INBOX',
+            pageToken,
+          },
+          { retry: false },
+        ),
+      );
+      for (const history of res.data.history ?? []) {
+        for (const added of history.messagesAdded ?? []) {
+          if (added.message?.id) ids.add(added.message.id);
+        }
+      }
+      pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken);
+    return [...ids];
+  }
+
+  private async listBacklog(backlogDays: number): Promise<string[]> {
     const ids: string[] = [];
     let pageToken: string | undefined;
     do {
@@ -143,29 +129,14 @@ export class GmailClient implements MailClient {
       for (const m of res.data.messages ?? []) if (m.id) ids.push(m.id);
       pageToken = res.data.nextPageToken ?? undefined;
     } while (pageToken);
-    return { ids, cursor: newCursor };
+    return ids;
   }
 
   async fetchMessage(id: string, maxBodyChars: number): Promise<EmailMessage> {
     const res = await this.quota.run(60, () =>
       this.gmail.users.messages.get({ userId: 'me', id, format: 'full' }, { retry: false }),
     );
-    const m = res.data;
-    const from = header(m, 'From');
-    const { address, domain } = parseAddress(from);
-    const { text, isHtml } = extractBody(m.payload ?? undefined);
-    return {
-      id,
-      threadId: m.threadId ?? id,
-      from,
-      address,
-      domain,
-      subject: header(m, 'Subject'),
-      date: header(m, 'Date'),
-      hasListUnsubscribe: header(m, 'List-Unsubscribe') !== '',
-      body: cleanBody(text, isHtml, maxBodyChars),
-      labelIds: m.labelIds ?? [],
-    };
+    return parseGmailMessage(id, res.data, maxBodyChars);
   }
 
   async modify(id: string, change: ModifyRequest): Promise<void> {

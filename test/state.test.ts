@@ -109,4 +109,44 @@ describe('State UI support', () => {
     s.recordDecision('m', D, true, NOW, { sender: 's', subject: 'subj' });
     expect(s.recent(1)[0]?.subject).toBe('subj');
   });
+
+  it('finishes a partially applied metadata migration', async () => {
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { createRequire } = await import('node:module');
+    const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
+      DatabaseSync: typeof DatabaseSyncType;
+    };
+    const path = join(mkdtempSync(join(tmpdir(), 'pm-')), 'partial.db');
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE decisions (user_id TEXT, message_id TEXT, category TEXT, confidence REAL,
+      source TEXT, reason TEXT, applied INTEGER, created_at TEXT, sender TEXT,
+      PRIMARY KEY (user_id, message_id))`);
+    old.close();
+    const state = new State(path);
+    state.recordDecision('m', D, true, NOW, { sender: 's', subject: 'subj' });
+    expect(state.recent(1)[0]).toMatchObject({ sender: 's', subject: 'subj' });
+    state.close();
+  });
+
+  it('shares sender streaks between state connections without mixing users', async () => {
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const path = join(mkdtempSync(join(tmpdir(), 'pm-')), 'shared.db');
+    const first = new State(path, 'first');
+    const second = new State(path, 'first');
+    const other = new State(path, 'other');
+    first.observeSender('a@x.com', 'receipts', 0.95);
+    second.observeSender('a@x.com', 'receipts', 0.95);
+    first.observeSender('a@x.com', 'receipts', 0.95);
+    expect(second.cachedCategory('a@x.com')).toBe('receipts');
+    expect(other.cachedCategory('a@x.com')).toBeNull();
+    second.observeSender('a@x.com', 'dev', 0.95);
+    expect(first.cachedCategory('a@x.com')).toBeNull();
+    first.close();
+    second.close();
+    other.close();
+  });
 });

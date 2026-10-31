@@ -102,6 +102,47 @@ describe('GmailClient (mocked Gmail service)', () => {
     expect(await client.listNew('100', 7)).toEqual({ ids: ['a', 'b'], cursor: '200' });
   });
 
+  it('reads all history pages and de-duplicates across pages', async () => {
+    const pages: (string | undefined)[] = [];
+    const client = make({
+      getProfile: (async () => ({ data: { historyId: '200' } })) as Fn,
+      history: {
+        list: (async ({ pageToken }: { pageToken?: string }) => {
+          pages.push(pageToken);
+          return pageToken
+            ? {
+                data: {
+                  history: [
+                    { messagesAdded: [{ message: { id: 'a' } }, { message: { id: 'b' } }] },
+                  ],
+                },
+              }
+            : {
+                data: {
+                  history: [{ messagesAdded: [{ message: { id: 'a' } }] }],
+                  nextPageToken: 'next',
+                },
+              };
+        }) as Fn,
+      },
+    } as never);
+    expect(await client.listNew('100', 7)).toEqual({ ids: ['a', 'b'], cursor: '200' });
+    expect(pages).toEqual([undefined, 'next']);
+  });
+
+  it('propagates history errors other than an expired cursor', async () => {
+    const failure = Object.assign(new Error('unavailable'), { code: 500 });
+    const client = make({
+      getProfile: (async () => ({ data: { historyId: '200' } })) as Fn,
+      history: {
+        list: (async () => {
+          throw failure;
+        }) as Fn,
+      },
+    } as never);
+    await expect(client.listNew('100', 7)).rejects.toBe(failure);
+  });
+
   it('listNew falls back to a recent-mail scan when history has expired (404)', async () => {
     const client = make({
       getProfile: (async () => ({ data: { historyId: '300' } })) as Fn,
@@ -130,6 +171,23 @@ describe('GmailClient (mocked Gmail service)', () => {
     expect(query).toContain('newer_than:3d');
   });
 
+  it('reads all backlog pages in order', async () => {
+    const pages: (string | undefined)[] = [];
+    const client = make({
+      getProfile: (async () => ({ data: { historyId: '5' } })) as Fn,
+      messages: {
+        list: (async ({ pageToken }: { pageToken?: string }) => {
+          pages.push(pageToken);
+          return pageToken
+            ? { data: { messages: [{ id: 'b' }] } }
+            : { data: { messages: [{ id: 'a' }], nextPageToken: 'next' } };
+        }) as Fn,
+      },
+    } as never);
+    expect(await client.listNew(null, 7)).toEqual({ ids: ['a', 'b'], cursor: '5' });
+    expect(pages).toEqual([undefined, 'next']);
+  });
+
   it('fetchMessage parses headers and cleans the body', async () => {
     const client = make({
       messages: {
@@ -156,6 +214,28 @@ describe('GmailClient (mocked Gmail service)', () => {
       address: 'orders@shop.com',
       hasListUnsubscribe: true,
       body: 'see [link:t.example.com]',
+    });
+  });
+
+  it('uses the first matching header regardless of capitalization', async () => {
+    const client = make({
+      messages: {
+        get: (async () => ({
+          data: {
+            payload: {
+              headers: [
+                { name: 'SUBJECT', value: 'First' },
+                { name: 'subject', value: 'Second' },
+                { name: 'From', value: 'one@example.com' },
+              ],
+            },
+          },
+        })) as Fn,
+      },
+    } as never);
+    expect(await client.fetchMessage('m1', 100)).toMatchObject({
+      subject: 'First',
+      address: 'one@example.com',
     });
   });
 

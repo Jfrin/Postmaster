@@ -6,6 +6,8 @@ Postmaster classifies incoming email using configurable rules, a learned sender 
 
 **TypeScript · Node.js · Gmail API · Azure OpenAI · SQLite · Docker**
 
+See the [project plan](docs/plan.md) for the canonical roadmap and deployment decisions.
+
 ## Highlights
 
 - **Hybrid classification:** checks deterministic rules and cached sender decisions before calling the model, reducing unnecessary API requests.
