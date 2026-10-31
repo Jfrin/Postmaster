@@ -1,0 +1,173 @@
+import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { request, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { MockClassifier } from '../src/classifier.js';
+import { loadConfigFile } from '../src/config.js';
+import { State } from '../src/state.js';
+import { createUiServer } from '../src/ui/server.js';
+import { YAML } from './helpers.js';
+
+let server: Server;
+let base: string;
+let configPath: string;
+let state: State;
+
+beforeEach(async () => {
+  configPath = join(mkdtempSync(join(tmpdir(), 'pm-ui-')), 'categories.yaml');
+  writeFileSync(configPath, YAML);
+  state = new State(':memory:');
+  server = createUiServer({ configPath, state, classifier: new MockClassifier(), mode: 'mock' });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+});
+
+afterEach(() => new Promise<void>((r) => server.close(() => r())));
+
+const json = { 'Content-Type': 'application/json' };
+
+describe('UI server', () => {
+  it('serves the page', async () => {
+    const res = await fetch(base);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('<title>Postmaster</title>');
+  });
+
+  it('returns the config', async () => {
+    const cfg = (await (await fetch(`${base}/api/config`)).json()) as { categories: unknown[] };
+    expect(cfg.categories).toHaveLength(3);
+  });
+
+  it('saves a valid config, keeps a backup, and stays loadable', async () => {
+    const cfg = (await (await fetch(`${base}/api/config`)).json()) as {
+      settings: { dry_run: boolean };
+    };
+    cfg.settings.dry_run = true;
+    const res = await fetch(`${base}/api/config`, {
+      method: 'PUT',
+      headers: json,
+      body: JSON.stringify(cfg),
+    });
+    expect(res.status).toBe(200);
+    expect(loadConfigFile(configPath).settings.dry_run).toBe(true);
+    expect(readFileSync(`${configPath}.bak`, 'utf8')).toBe(YAML);
+  });
+
+  it('rejects an invalid config with readable errors and leaves the file alone', async () => {
+    const cfg = (await (await fetch(`${base}/api/config`)).json()) as {
+      rules: { category: string }[];
+    };
+    cfg.rules[0]!.category = 'nope';
+    const res = await fetch(`${base}/api/config`, {
+      method: 'PUT',
+      headers: json,
+      body: JSON.stringify(cfg),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain('unknown category');
+    expect(readFileSync(configPath, 'utf8')).toBe(YAML);
+    expect(existsSync(`${configPath}.bak`)).toBe(false);
+  });
+
+  it('refuses to save a config that contains a delete action', async () => {
+    const cfg = (await (await fetch(`${base}/api/config`)).json()) as {
+      categories: { actions: string[] }[];
+    };
+    cfg.categories[0]!.actions = ['delete'];
+    const res = await fetch(`${base}/api/config`, {
+      method: 'PUT',
+      headers: json,
+      body: JSON.stringify(cfg),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('lists recent decisions with sender and subject', async () => {
+    state.recordDecision(
+      'm1',
+      { category: 'receipts', confidence: 0.9, source: 'model', reason: 'r' },
+      false,
+      new Date(),
+      { sender: 'a@b.com', subject: 'Hello' },
+    );
+    const d = (await (await fetch(`${base}/api/decisions`)).json()) as {
+      decisions: { sender: string; subject: string }[];
+      dailyCap: number;
+    };
+    expect(d.decisions[0]).toMatchObject({ sender: 'a@b.com', subject: 'Hello' });
+    expect(d.dailyCap).toBe(5);
+  });
+
+  it('"Try it" uses rules first, then the classifier, and changes no state', async () => {
+    const post = (body: object) =>
+      fetch(`${base}/api/try`, { method: 'POST', headers: json, body: JSON.stringify(body) }).then(
+        (r) => r.json(),
+      );
+    const viaRule = (await post({ from: 'x@github.com', subject: 's', body: 'b' })) as {
+      source: string;
+      category: string;
+    };
+    expect(viaRule).toMatchObject({ source: 'rule', category: 'dev' });
+    const viaModel = (await post({
+      from: 'a@shop.com',
+      subject: 'Your order shipped',
+      body: 'order',
+    })) as {
+      source: string;
+      actions: string[];
+    };
+    expect(viaModel.source).toBe('model');
+    expect(viaModel.actions).toContain('archive');
+    const unsure = (await post({ from: 'a@b.com', subject: 'hi', body: 'hello' })) as {
+      category: string;
+    };
+    expect(unsure.category).toBe('needs_review');
+    expect(state.recent(10)).toHaveLength(0);
+    expect(state.llmCallsToday(new Date())).toBe(0);
+  });
+
+  it('rejects bad "Try it" input', async () => {
+    const res = await fetch(`${base}/api/try`, {
+      method: 'POST',
+      headers: json,
+      body: '{"from":1}',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('blocks non-localhost Host headers (DNS rebinding)', async () => {
+    const port = (server.address() as AddressInfo).port;
+    const status = await new Promise<number>((resolve) => {
+      const req = request(
+        { host: '127.0.0.1', port, path: '/api/config', headers: { Host: 'evil.example' } },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        },
+      );
+      req.end();
+    });
+    expect(status).toBe(403);
+  });
+
+  it('blocks cross-site writes and non-JSON writes', async () => {
+    const cross = await fetch(`${base}/api/config`, {
+      method: 'PUT',
+      headers: { ...json, Origin: 'http://evil.example' },
+      body: '{}',
+    });
+    expect(cross.status).toBe(403);
+    const form = await fetch(`${base}/api/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/plain' },
+      body: '{}',
+    });
+    expect(form.status).toBe(415);
+  });
+
+  it('404s unknown paths', async () => {
+    expect((await fetch(`${base}/nope`)).status).toBe(404);
+  });
+});

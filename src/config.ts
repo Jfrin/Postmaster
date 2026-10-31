@@ -14,7 +14,8 @@ const SettingsSchema = z
     poll_interval_seconds: z.number().int().positive().default(300),
     max_body_chars: z.number().int().positive().default(1500),
     daily_llm_call_cap: z.number().int().nonnegative().default(2000),
-    backlog_days: z.number().int().positive().default(7),
+    // Gmail's newer_than search breaks on absurd windows, so cap it at 10 years.
+    backlog_days: z.number().int().positive().max(3650).default(7),
   })
   .strict();
 
@@ -41,6 +42,8 @@ const CategorySchema = z
     description: z.string().min(1),
     examples: z.array(z.string()).default([]),
     actions: z.array(ActionSchema).default(['label']),
+    // Only offer this category for mail that is still unread in Gmail.
+    only_if_unread: z.boolean().default(false),
   })
   .strict();
 
@@ -62,6 +65,13 @@ export const ConfigSchema = z
       ctx.addIssue({
         code: 'custom',
         message: `fallback_category "${cfg.settings.fallback_category}" is not a defined category`,
+      });
+    }
+    const fallback = cfg.categories.find((c) => c.id === cfg.settings.fallback_category);
+    if (fallback?.only_if_unread) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'the fallback category cannot be unread-only, read mail would have nowhere to go',
       });
     }
     cfg.rules.forEach((r, i) => {

@@ -9,6 +9,9 @@ export interface ModelResult {
   reason: string;
 }
 
+/** The model answered, but not with a valid category. Safe to file under the fallback. */
+export class InvalidModelOutputError extends Error {}
+
 export interface Classifier {
   classify(msg: EmailMessage, categories: Category[]): Promise<ModelResult>;
 }
@@ -81,6 +84,7 @@ export class AzureClassifier implements Classifier {
   constructor(
     private readonly client: ChatClient,
     private readonly deployment: string,
+    private readonly endpoint = 'your endpoint',
   ) {}
 
   static fromEnv(env: NodeJS.ProcessEnv = process.env): AzureClassifier {
@@ -101,32 +105,59 @@ export class AzureClassifier implements Classifier {
       apiVersion: env.AZURE_OPENAI_API_VERSION ?? '2024-10-21',
       maxRetries: 4,
     });
-    return new AzureClassifier(client as unknown as ChatClient, deployment);
+    return new AzureClassifier(client as unknown as ChatClient, deployment, endpoint);
   }
 
   async classify(msg: EmailMessage, categories: Category[]): Promise<ModelResult> {
     let lastErr: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
       // retry once on invalid output
-      const res = await this.client.chat.completions.create({
-        model: this.deployment,
-        temperature: 0,
-        messages: [
-          { role: 'system', content: systemPrompt(categories) },
-          { role: 'user', content: userPrompt(msg) },
-        ],
-        response_format: {
-          type: 'json_schema',
-          json_schema: { name: 'classification', strict: true, schema: responseSchema(categories) },
-        },
-      });
+      let res;
+      try {
+        res = await this.client.chat.completions.create({
+          model: this.deployment,
+          temperature: 0,
+          messages: [
+            { role: 'system', content: systemPrompt(categories) },
+            { role: 'user', content: userPrompt(msg) },
+          ],
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'classification',
+              strict: true,
+              schema: responseSchema(categories),
+            },
+          },
+        });
+      } catch (err) {
+        throw this.explain(err);
+      }
       try {
         return parseModelOutput(res.choices[0]?.message.content ?? '', categories);
       } catch (err) {
         lastErr = err;
       }
     }
-    throw new Error(`model returned invalid output twice: ${String(lastErr)}`);
+    throw new InvalidModelOutputError(`model returned invalid output twice: ${String(lastErr)}`);
+  }
+
+  /** Turn the common Azure setup mistakes into messages that say what to fix. */
+  private explain(err: unknown): Error {
+    const status = (err as { status?: number }).status;
+    if (status === 404) {
+      return new Error(
+        `Azure returned 404: no deployment named "${this.deployment}" at ${this.endpoint}. ` +
+          'AZURE_OPENAI_DEPLOYMENT must be the deployment name shown in Foundry (not the model name), ' +
+          'and AZURE_OPENAI_ENDPOINT must be the base URL, like https://NAME.openai.azure.com',
+      );
+    }
+    if (status === 401 || status === 403) {
+      return new Error(
+        `Azure returned ${status}: the API key was rejected. Check AZURE_OPENAI_API_KEY and that it belongs to this resource.`,
+      );
+    }
+    return err instanceof Error ? err : new Error(String(err));
   }
 }
 

@@ -1,0 +1,109 @@
+# Edited via the Postmaster UI. The previous version is categories.yaml.bak
+settings:
+  label_prefix: AI/
+  confidence_threshold: 0.7
+  fallback_category: needs_review
+  dry_run: false
+  poll_interval_seconds: 300
+  max_body_chars: 1500
+  daily_llm_call_cap: 2000
+  backlog_days: 7
+rules:
+  - match:
+      from_domain: github.com
+    category: dev
+categories:
+  - id: action_required
+    label: Action Required
+    description: Asks you to reply, approve, sign or pay by a date
+    examples: []
+    actions:
+      - label
+      - star
+  - id: work
+    label: Work
+    description: Colleagues, clients, project and meeting threads
+    examples: []
+    actions:
+      - label
+  - id: personal
+    label: Personal
+    description: Friends and family, non-commercial one-to-one mail
+    examples: []
+    actions:
+      - label
+  - id: finance
+    label: Finance
+    description: Statements, invoices due, bank alerts, tax
+    examples: []
+    actions:
+      - label
+  - id: receipts
+    label: Receipts
+    description: Purchase confirmations, shipping updates, paid invoices
+    examples:
+      - Your order has shipped
+    actions:
+      - label
+      - mark_read
+      - archive
+  - id: travel
+    label: Travel
+    description: Bookings, boarding passes, itineraries, hotel mail
+    examples: []
+    actions:
+      - label
+  - id: security
+    label: Security
+    description: Login alerts, password resets, verification codes
+    examples: []
+    actions:
+      - label
+  - id: newsletters
+    label: Newsletters
+    description: Subscribed digests, blogs, Substack-style content
+    examples: []
+    actions:
+      - label
+      - archive
+  - id: promotions
+    label: Promotions
+    description: Sales, discounts, marketing blasts
+    examples: []
+    actions:
+      - label
+      - mark_read
+      - archive
+  - id: social
+    label: Social
+    description: Social network and app activity notices
+    examples: []
+    actions:
+      - label
+      - archive
+  - id: dev
+    label: Dev
+    description: GitHub, CI results, cloud and service alerts
+    examples: []
+    actions:
+      - label
+      - archive
+  - id: events
+    label: Events
+    description: Invites, RSVPs, tickets, reminders
+    examples: []
+    actions:
+      - label
+  - id: needs_review
+    label: Needs Review
+    description: Anything that does not clearly fit another category
+    examples: []
+    actions:
+      - label
+  - id: fanfiction
+    label: Books
+    description: Anything related at all to published books or fanfiction
+    examples: []
+    actions:
+      - label
+      - mark_read

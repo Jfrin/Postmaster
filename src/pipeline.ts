@@ -1,5 +1,5 @@
 import type { Config } from './config.js';
-import type { Classifier } from './classifier.js';
+import { InvalidModelOutputError, type Classifier } from './classifier.js';
 import type { Logger } from './logger.js';
 import { matchRule } from './rules.js';
 import type { State } from './state.js';
@@ -42,13 +42,22 @@ export async function decide(ctx: PipelineContext, msg: EmailMessage): Promise<D
   const { config, state, classifier, log } = ctx;
   const { settings } = config;
 
-  const rule = matchRule(config.rules, msg);
+  // A category marked only_if_unread is not offered for mail that is already read: no rule, no
+  // cache hit and no model answer can put it there.
+  const unread = msg.labelIds.includes('UNREAD');
+  const allowed = config.categories.filter((c) => unread || !c.only_if_unread);
+  const allowedIds = new Set(allowed.map((c) => c.id));
+
+  const rule = matchRule(
+    config.rules.filter((r) => allowedIds.has(r.category)),
+    msg,
+  );
   if (rule) {
     return { category: rule.category, confidence: 1, source: 'rule', reason: 'matched rule' };
   }
 
   const cached = state.cachedCategory(msg.address);
-  if (cached && config.categories.some((c) => c.id === cached)) {
+  if (cached && allowedIds.has(cached)) {
     return { category: cached, confidence: 1, source: 'cache', reason: 'sender cache' };
   }
 
@@ -65,29 +74,38 @@ export async function decide(ctx: PipelineContext, msg: EmailMessage): Promise<D
 
   state.countLlmCall(now);
   try {
-    const result = await classifier.classify(msg, config.categories);
+    const result = await classifier.classify(msg, allowed);
     state.observeSender(msg.address, result.category, result.confidence);
     if (result.confidence < settings.confidence_threshold) {
       return { ...result, category: settings.fallback_category, source: 'fallback' };
     }
     return { ...result, source: 'model' };
   } catch (err) {
-    log.error({ err: String(err), id: msg.id }, 'classification failed, using fallback');
-    return {
-      category: settings.fallback_category,
-      confidence: 0,
-      source: 'fallback',
-      reason: 'classifier error',
-    };
+    if (err instanceof InvalidModelOutputError) {
+      // The model answered nonsense (or was steered by the email). Filing it for review is safe.
+      log.warn({ err: String(err), id: msg.id }, 'invalid model output, using fallback');
+      return {
+        category: settings.fallback_category,
+        confidence: 0,
+        source: 'fallback',
+        reason: 'invalid model output',
+      };
+    }
+    // Anything else (bad key, wrong deployment, network, rate limit) is not the email's fault.
+    // Do not record a decision: rethrow so the message is retried on the next cycle.
+    throw err;
   }
 }
 
 export async function processMessage(ctx: PipelineContext, msg: EmailMessage): Promise<Outcome> {
   const { config, mail, state, log } = ctx;
 
-  // Idempotent: never touch a message twice, and skip threads that already carry an AI/ label.
+  // Idempotent: never apply twice, and skip threads that already carry an AI/ label. In dry run
+  // any earlier decision counts (no re-spend); when live, only an applied one does, so mail that
+  // was only seen in dry run still gets filed.
   const own = new Set(ctx.labelIds.values());
-  if (state.hasDecision(msg.id) || msg.labelIds.some((l) => own.has(l))) return 'skipped';
+  const already = state.hasDecision(msg.id, !config.settings.dry_run);
+  if (already || msg.labelIds.some((l) => own.has(l))) return 'skipped';
 
   const decision = await decide(ctx, msg);
   const category = config.categories.find((c) => c.id === decision.category);
@@ -101,7 +119,10 @@ export async function processMessage(ctx: PipelineContext, msg: EmailMessage): P
   );
 
   if (!dry) await mail.modify(msg.id, change);
-  state.recordDecision(msg.id, decision, !dry, ctx.now());
+  state.recordDecision(msg.id, decision, !dry, ctx.now(), {
+    sender: msg.address,
+    subject: msg.subject.slice(0, 200),
+  });
   return dry ? 'dry_run' : 'applied';
 }
 

@@ -25,6 +25,18 @@ services:
         max-size: '10m'
         max-file: '3'
 
+  # Admin UI: http://localhost:8080  (docker compose up -d ui)
+  # Published on 127.0.0.1 only, so only this machine can reach it. It has no login.
+  ui:
+    build: { context: ., target: runtime }
+    restart: unless-stopped
+    env_file: [{ path: .env, required: false }]
+    command: ['node', 'dist/ui-main.js']
+    ports: ['127.0.0.1:8080:8080']
+    volumes:
+      - ./config:/srv/config
+      - ./data:/srv/data
+
   # docker compose run --rm ci      lint, format, typecheck, tests, config check, build
   ci:
     <<: *tool

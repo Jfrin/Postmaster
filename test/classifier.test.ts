@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AzureClassifier,
+  InvalidModelOutputError,
   MockClassifier,
   parseModelOutput,
   responseSchema,
@@ -90,8 +91,35 @@ describe('AzureClassifier', () => {
   it('throws after two invalid replies', async () => {
     const client = fakeClient(['nope', null]);
     await expect(new AzureClassifier(client, 'dep').classify(makeMessage(), cats)).rejects.toThrow(
-      /invalid output twice/,
+      InvalidModelOutputError,
     );
+  });
+
+  it('explains a 404 by naming the deployment and endpoint', async () => {
+    const client: ChatClient = {
+      chat: {
+        completions: {
+          create: () => Promise.reject(Object.assign(new Error('x'), { status: 404 })),
+        },
+      },
+    };
+    const err = await new AzureClassifier(client, 'my-dep', 'https://r.openai.azure.com')
+      .classify(makeMessage(), cats)
+      .catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(InvalidModelOutputError);
+    expect(String(err)).toMatch(/my-dep.*https:\/\/r\.openai\.azure\.com.*deployment name/s);
+  });
+
+  it('explains a rejected key and passes other errors through', async () => {
+    const make = (e: unknown): ChatClient => ({
+      chat: { completions: { create: () => Promise.reject(e) } },
+    });
+    const auth = new AzureClassifier(make(Object.assign(new Error('x'), { status: 401 })), 'd');
+    await expect(auth.classify(makeMessage(), cats)).rejects.toThrow(/API key was rejected/);
+    const net = new AzureClassifier(make(new Error('socket hang up')), 'd');
+    await expect(net.classify(makeMessage(), cats)).rejects.toThrow('socket hang up');
+    const odd = new AzureClassifier(make('string failure'), 'd');
+    await expect(odd.classify(makeMessage(), cats)).rejects.toThrow('string failure');
   });
 
   it('fromEnv demands the three Azure variables', () => {

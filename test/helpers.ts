@@ -1,4 +1,4 @@
-import { parseConfig, type Config } from '../src/config.js';
+import { parseConfig, type Category, type Config } from '../src/config.js';
 import type { Classifier, ModelResult } from '../src/classifier.js';
 import { silentLogger } from '../src/logger.js';
 import type { BaseContext } from '../src/pipeline.js';
@@ -77,9 +77,11 @@ export class FakeMail implements MailClient {
 
 export class FakeClassifier implements Classifier {
   calls = 0;
+  lastCategoryIds: string[] = [];
   constructor(private readonly result: ModelResult | Error) {}
-  classify() {
+  classify(_msg: EmailMessage, categories: Category[]) {
     this.calls++;
+    this.lastCategoryIds = categories.map((c) => c.id);
     return this.result instanceof Error
       ? Promise.reject(this.result)
       : Promise.resolve(this.result);

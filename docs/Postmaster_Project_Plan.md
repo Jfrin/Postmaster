@@ -20,7 +20,7 @@ Build one small Docker container that reads new Gmail messages, asks a cheap Azu
 - Sending or drafting replies.
 - Deleting mail or unsubscribing from anything.
 - Training your own model.
-- A web UI (the config file is the interface), or more than a handful of mailboxes on day one; the design leaves room for both, see Scaling to multiple users.
+- A public or multi-user web UI, or more than a handful of mailboxes on day one; the design leaves room for both, see Scaling to multiple users. A small local admin UI is included (see Local admin UI).
 
 ## Architecture
 
@@ -89,9 +89,20 @@ categories:
 
 - **Add or remove a category:** add or delete a block under `categories`. The prompt sent to the model is built from this list each cycle.
 - **Change what happens to a category:** edit `actions`. The allowed actions are `label`, `star`, `mark_read` and `archive`; there is deliberately no delete.
+- **Only for unread mail:** set `only_if_unread: true` on a category (Action Required ships with it) and mail you have already read is never put in it; it is classified as if that category did not exist. Rules and the sender cache for it are skipped for read mail too. The fallback category cannot use it.
 - **Fix a wrong guess:** add a rule for the sender, or sharpen the category description or add an example.
 - **Control spend and risk:** `dry_run`, `confidence_threshold` and `daily_llm_call_cap` are all one-line changes.
 - **Catch typos early:** the service validates the file against a schema at startup and on each reload, and keeps using the last good config if the new one is invalid.
+
+## Local admin UI
+
+A small page for one person on one machine, so you do not have to hand-edit YAML or read raw logs. The YAML file stays the source of truth.
+
+- **Run it:** `docker compose up -d ui`, then open `http://localhost:8080`. It is a second container from the same image, published on `127.0.0.1` only, with no login, so never expose the port.
+- **Activity:** recent decisions with sender, subject, category, confidence, whether a rule or the model decided, and whether it was applied or a dry run, plus model calls against the daily cap.
+- **Categories, Rules, Settings:** forms for everything in `categories.yaml`, including the dry-run switch. Saves are validated against the same schema as the poller, so an invalid or unsafe config (for example a `delete` action) is refused with a readable message. The previous file is kept as `categories.yaml.bak`; rewriting the file drops YAML comments.
+- **Try it:** paste a sample email and see the label and actions it would get under your saved config. It calls the real model if Azure settings are present, and changes nothing in Gmail and nothing in the state database.
+- **Safety:** it only answers requests addressed to localhost, refuses cross-site writes, and renders email text as plain text, never HTML.
 
 ## Model choice and prompt design
 
@@ -482,6 +493,15 @@ Check items off as you go. These phases are finer-grained than the five-phase ro
 - [ ] Web sign-in page over HTTPS (Azure Container Apps) for the Google OAuth flow
 - [ ] Disconnect-and-delete endpoint that removes a user's token and data
 - [ ] Google app verification and security assessment before going past 100 users
+
+### Local admin UI
+
+- [x] `src/ui/server.ts`: config read and validated save with backup, recent decisions, and a "Try it" endpoint
+- [x] `src/ui/page.ts`: single-page UI with Activity, Categories, Rules, Settings and Try it tabs, no external dependencies
+- [x] Decision log stores sender and subject, with a migration for older databases
+- [x] Host and origin checks and tests for them (DNS rebinding, cross-site writes, non-JSON writes)
+- [x] `ui` compose service published on `127.0.0.1:8080` only
+- [ ] Optional: a shared-secret login before ever publishing the port beyond localhost
 
 ### Phase 11: Polish (optional)
 

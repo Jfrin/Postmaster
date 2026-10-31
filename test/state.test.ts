@@ -1,3 +1,4 @@
+import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { State } from '../src/state.js';
 
@@ -19,6 +20,13 @@ describe('State', () => {
     expect(s.hasDecision('m1')).toBe(true);
     expect(s.appliedSince('2026-10-28T00:00:00Z')).toHaveLength(1);
     expect(s.appliedSince('2026-10-28T00:00:00Z')[0]?.category).toBe('receipts');
+  });
+
+  it('hasDecision can ignore dry-run decisions', () => {
+    const s = new State(':memory:');
+    s.recordDecision('m1', D, false, NOW);
+    expect(s.hasDecision('m1')).toBe(true);
+    expect(s.hasDecision('m1', true)).toBe(false);
   });
 
   it('excludes dry-run decisions from appliedSince', () => {
@@ -59,5 +67,38 @@ describe('State', () => {
     const a = new State(':memory:', 'a');
     a.setCursor('1');
     expect(a.getCursor()).toBe('1');
+  });
+});
+
+describe('State UI support', () => {
+  it('returns recent decisions newest first, with sender and subject', () => {
+    const s = new State(':memory:');
+    s.recordDecision('a', D, true, new Date('2026-10-28T09:00:00Z'), {
+      sender: 'x@y.com',
+      subject: 'First',
+    });
+    s.recordDecision('b', D, true, new Date('2026-10-28T10:00:00Z'));
+    const rows = s.recent(10);
+    expect(rows.map((r) => r.message_id)).toEqual(['b', 'a']);
+    expect(rows[1]).toMatchObject({ sender: 'x@y.com', subject: 'First' });
+    expect(s.recent(1)).toHaveLength(1);
+  });
+
+  it('migrates a database created before sender and subject existed', async () => {
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { createRequire } = await import('node:module');
+    const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
+      DatabaseSync: typeof DatabaseSyncType;
+    };
+    const path = join(mkdtempSync(join(tmpdir(), 'pm-')), 'old.db');
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE decisions (user_id TEXT, message_id TEXT, category TEXT, confidence REAL,
+      source TEXT, reason TEXT, applied INTEGER, created_at TEXT, PRIMARY KEY (user_id, message_id))`);
+    old.close();
+    const s = new State(path);
+    s.recordDecision('m', D, true, NOW, { sender: 's', subject: 'subj' });
+    expect(s.recent(1)[0]?.subject).toBe('subj');
   });
 });

@@ -29,6 +29,28 @@ describe('config schema', () => {
     expect(() => parseConfig(YAML.replace('id: needs_review', 'id: other'))).toThrow(/fallback/);
   });
 
+  it('rejects an absurd backlog window that Gmail cannot search', () => {
+    expect(() =>
+      parseConfig(YAML.replace('dry_run: false', 'backlog_days: 999999999999999')),
+    ).toThrow();
+    expect(
+      parseConfig(YAML.replace('dry_run: false', 'backlog_days: 3650')).settings.backlog_days,
+    ).toBe(3650);
+  });
+
+  it('defaults only_if_unread to false and refuses it on the fallback category', () => {
+    expect(parseConfig(YAML).categories[0]?.only_if_unread).toBe(false);
+    const bad = YAML.replace(
+      'id: needs_review, label: Needs Review,',
+      'id: needs_review, label: Needs Review, only_if_unread: true,',
+    );
+    expect(() => parseConfig(bad)).toThrow(/fallback category cannot be unread-only/);
+    const ok = parseConfig(
+      YAML.replace('id: dev, label: Dev,', 'id: dev, label: Dev, only_if_unread: true,'),
+    );
+    expect(ok.categories[1]?.only_if_unread).toBe(true);
+  });
+
   it('rejects delete and any other unknown action', () => {
     expect(() => parseConfig(YAML.replace('[label, archive]', '[label, delete]'))).toThrow();
   });

@@ -23,6 +23,14 @@ When a day of logs looks right, set `dry_run: false` in `config/categories.yaml`
 | `docker compose run --rm undo <ISO timestamp>` | Remove labels applied since a time                      |
 | `docker compose run --rm eval --mock`          | Accuracy and confusion matrix over `eval/dataset.jsonl` |
 
+## Admin UI
+
+```bash
+docker compose up -d ui     # then open http://localhost:8080
+```
+
+Recent decisions, editable categories, rules and settings, and a "Try it" box that shows how a pasted email would be sorted without touching Gmail. Saving rewrites `config/categories.yaml` (the old version is kept as `categories.yaml.bak`, comments are not preserved) and Postmaster picks it up on its next poll cycle. The port is published on 127.0.0.1 only and there is no login, so do not expose it.
+
 ## Testing approach
 
 - `MailClient` and `Classifier` are interfaces; tests use fakes, so the whole pipeline runs offline.
