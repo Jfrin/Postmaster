@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MockClassifier } from '../src/classifier.js';
 import { loadConfigFile } from '../src/config.js';
+import { readControl, touchHeartbeat } from '../src/control.js';
 import { State } from '../src/state.js';
 import { createUiServer } from '../src/ui/server.js';
 import { YAML } from './helpers.js';
@@ -14,12 +15,22 @@ let server: Server;
 let base: string;
 let configPath: string;
 let state: State;
+let dataDir: string;
 
 beforeEach(async () => {
-  configPath = join(mkdtempSync(join(tmpdir(), 'pm-ui-')), 'categories.yaml');
+  const dir = mkdtempSync(join(tmpdir(), 'pm-ui-'));
+  dataDir = join(dir, 'data');
+  mkdirSync(dataDir);
+  configPath = join(dir, 'categories.yaml');
   writeFileSync(configPath, YAML);
   state = new State(':memory:');
-  server = createUiServer({ configPath, state, classifier: new MockClassifier(), mode: 'mock' });
+  server = createUiServer({
+    configPath,
+    dataDir,
+    state,
+    classifier: new MockClassifier(),
+    mode: 'mock',
+  });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
@@ -165,6 +176,54 @@ describe('UI server', () => {
       body: '{}',
     });
     expect(form.status).toBe(415);
+  });
+
+  it('reports the poller as offline until it sends a heartbeat, and refuses Start', async () => {
+    const status = (await (await fetch(`${base}/api/status`)).json()) as {
+      online: boolean;
+      running: boolean;
+    };
+    expect(status).toMatchObject({ online: false, running: false });
+    const res = await fetch(`${base}/api/control`, {
+      method: 'POST',
+      headers: json,
+      body: '{"action":"start"}',
+    });
+    expect(res.status).toBe(409);
+    expect(readControl(dataDir).running).toBe(false);
+  });
+
+  it('Start and Stop flip the control flag when the poller is online', async () => {
+    touchHeartbeat(dataDir);
+    const post = (action: string) =>
+      fetch(`${base}/api/control`, {
+        method: 'POST',
+        headers: json,
+        body: JSON.stringify({ action }),
+      });
+    const started = (await (await post('start')).json()) as { running: boolean; online: boolean };
+    expect(started).toMatchObject({ running: true, online: true });
+    expect(readControl(dataDir).running).toBe(true);
+    const stopped = (await (await post('stop')).json()) as { running: boolean };
+    expect(stopped.running).toBe(false);
+  });
+
+  it('refuses to Start with an invalid config, and rejects unknown actions', async () => {
+    touchHeartbeat(dataDir);
+    writeFileSync(configPath, 'categories: []');
+    const bad = await fetch(`${base}/api/control`, {
+      method: 'POST',
+      headers: json,
+      body: '{"action":"start"}',
+    });
+    expect(bad.status).toBe(400);
+    expect(readControl(dataDir).running).toBe(false);
+    const odd = await fetch(`${base}/api/control`, {
+      method: 'POST',
+      headers: json,
+      body: '{"action":"nuke"}',
+    });
+    expect(odd.status).toBe(400);
   });
 
   it('404s unknown paths', async () => {

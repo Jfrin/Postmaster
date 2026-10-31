@@ -1,11 +1,10 @@
-import { mkdirSync, utimesSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { AzureClassifier, MockClassifier, type Classifier } from './classifier.js';
+import { AzureClassifier, MockClassifier } from './classifier.js';
 import { ConfigStore, loadConfigFile } from './config.js';
 import { GmailClient, oauthClientFromSecrets } from './gmail.js';
 import { createLogger } from './logger.js';
-import { runCycle } from './pipeline.js';
+import { runPoller } from './poller.js';
 import { State } from './state.js';
 
 const Env = z.object({
@@ -14,13 +13,6 @@ const Env = z.object({
   DATA_DIR: z.string().default('data'),
   POSTMASTER_MOCK: z.enum(['0', '1']).default('0'),
 });
-
-function touch(path: string): void {
-  if (existsSync(path)) utimesSync(path, new Date(), new Date());
-  else writeFileSync(path, '');
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main(): Promise<void> {
   const env = Env.parse(process.env);
@@ -32,29 +24,23 @@ async function main(): Promise<void> {
     return;
   }
 
-  mkdirSync(env.DATA_DIR, { recursive: true });
   const store = new ConfigStore(env.CONFIG_PATH, log);
-  const state = new State(join(env.DATA_DIR, 'state.db'));
-  const mail = GmailClient.fromAuth(oauthClientFromSecrets(env.SECRETS_DIR));
-  const classifier: Classifier =
-    env.POSTMASTER_MOCK === '1' ? new MockClassifier() : AzureClassifier.fromEnv();
-  const heartbeat = join(env.DATA_DIR, 'heartbeat');
+  const state = new State(join(env.DATA_DIR, 'state.db')); // also creates the data directory
 
-  let running = true;
-  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => (running = false));
+  let exiting = false;
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => (exiting = true));
 
-  while (running) {
-    const config = store.reload(); // re-read every cycle, no restart needed
-    try {
-      const stats = await runCycle({ config, mail, classifier, state, log, now: () => new Date() });
-      log.info({ ...stats, dry_run: config.settings.dry_run }, 'cycle complete');
-    } catch (err) {
-      log.error({ err: String(err) }, 'cycle failed');
-    }
-    touch(heartbeat);
-    // sleep in short slices so SIGTERM stops the container promptly
-    for (let i = 0; i < config.settings.poll_interval_seconds && running; i++) await sleep(1000);
-  }
+  await runPoller({
+    dataDir: env.DATA_DIR,
+    reloadConfig: () => store.reload(), // re-read every cycle, no restart needed
+    state,
+    makeMail: () => GmailClient.fromAuth(oauthClientFromSecrets(env.SECRETS_DIR)),
+    makeClassifier: () =>
+      env.POSTMASTER_MOCK === '1' ? new MockClassifier() : AzureClassifier.fromEnv(),
+    log,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    exiting: () => exiting,
+  });
   state.close();
   log.info('shut down cleanly');
 }

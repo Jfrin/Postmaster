@@ -20,24 +20,28 @@ categories:
     actions:
       - label
       - star
+    only_if_unread: true
   - id: work
     label: Work
     description: Colleagues, clients, project and meeting threads
     examples: []
     actions:
       - label
+    only_if_unread: false
   - id: personal
     label: Personal
     description: Friends and family, non-commercial one-to-one mail
     examples: []
     actions:
       - label
+    only_if_unread: false
   - id: finance
     label: Finance
     description: Statements, invoices due, bank alerts, tax
     examples: []
     actions:
       - label
+    only_if_unread: false
   - id: receipts
     label: Receipts
     description: Purchase confirmations, shipping updates, paid invoices
@@ -47,18 +51,21 @@ categories:
       - label
       - mark_read
       - archive
+    only_if_unread: false
   - id: travel
     label: Travel
     description: Bookings, boarding passes, itineraries, hotel mail
     examples: []
     actions:
       - label
+    only_if_unread: false
   - id: security
     label: Security
     description: Login alerts, password resets, verification codes
     examples: []
     actions:
       - label
+    only_if_unread: false
   - id: newsletters
     label: Newsletters
     description: Subscribed digests, blogs, Substack-style content
@@ -66,6 +73,7 @@ categories:
     actions:
       - label
       - archive
+    only_if_unread: false
   - id: promotions
     label: Promotions
     description: Sales, discounts, marketing blasts
@@ -74,6 +82,7 @@ categories:
       - label
       - mark_read
       - archive
+    only_if_unread: false
   - id: social
     label: Social
     description: Social network and app activity notices
@@ -81,6 +90,7 @@ categories:
     actions:
       - label
       - archive
+    only_if_unread: false
   - id: dev
     label: Dev
     description: GitHub, CI results, cloud and service alerts
@@ -88,18 +98,21 @@ categories:
     actions:
       - label
       - archive
+    only_if_unread: false
   - id: events
     label: Events
     description: Invites, RSVPs, tickets, reminders
     examples: []
     actions:
       - label
+    only_if_unread: false
   - id: needs_review
     label: Needs Review
     description: Anything that does not clearly fit another category
     examples: []
     actions:
       - label
+    only_if_unread: false
   - id: books
     label: Books
     description: Anything related at all to published books or fanfiction
@@ -107,3 +120,4 @@ categories:
     actions:
       - label
       - mark_read
+    only_if_unread: false

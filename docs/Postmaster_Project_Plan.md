@@ -102,6 +102,7 @@ A small page for one person on one machine, so you do not have to hand-edit YAML
 - **Activity:** recent decisions with sender, subject, category, confidence, whether a rule or the model decided, and whether it was applied or a dry run, plus model calls against the daily cap.
 - **Categories, Rules, Settings:** forms for everything in `categories.yaml`, including the dry-run switch. Saves are validated against the same schema as the poller, so an invalid or unsafe config (for example a `delete` action) is refused with a readable message. The previous file is kept as `categories.yaml.bak`; rewriting the file drops YAML comments.
 - **Try it:** paste a sample email and see the label and actions it would get under your saved config. It calls the real model if Azure settings are present, and changes nothing in Gmail and nothing in the state database.
+- **Start and Stop:** `docker compose up` starts the containers but Postmaster stays idle. A Start button in the UI begins polling, and Stop finishes the current email and pauses. Every container start begins stopped, so a reboot or restart never begins filing mail on its own. The UI and the poller talk through small files in `data/` (`control.json`, `status.json`, `heartbeat`). A missing token or bad Azure setting shows as a readable error in the UI instead of a crash loop.
 - **Safety:** it only answers requests addressed to localhost, refuses cross-site writes, and renders email text as plain text, never HTML.
 
 ## Model choice and prompt design
@@ -501,6 +502,8 @@ Check items off as you go. These phases are finer-grained than the five-phase ro
 - [x] Decision log stores sender and subject, with a migration for older databases
 - [x] Host and origin checks and tests for them (DNS rebinding, cross-site writes, non-JSON writes)
 - [x] `ui` compose service published on `127.0.0.1:8080` only
+- [x] Start and Stop button, status badge and progress; every container start begins stopped
+- [x] `src/poller.ts` (testable loop), `src/control.ts` (control, status and heartbeat files) and tests for idle, start, stop, mid-cycle stop and missing token
 - [ ] Optional: a shared-secret login before ever publishing the port beyond localhost
 
 ### Phase 11: Polish (optional)

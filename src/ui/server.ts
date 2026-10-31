@@ -4,6 +4,7 @@ import { stringify } from 'yaml';
 import { z } from 'zod';
 import type { Classifier } from '../classifier.js';
 import { ConfigSchema, loadConfigFile } from '../config.js';
+import { heartbeatAgeMs, readControl, readStatus, writeControl } from '../control.js';
 import { matchRule } from '../rules.js';
 import type { State } from '../state.js';
 import { cleanBody, parseAddress } from '../text.js';
@@ -12,6 +13,8 @@ import { PAGE } from './page.js';
 
 export interface UiDeps {
   configPath: string;
+  /** shared volume with the poller: control.json, status.json, heartbeat */
+  dataDir: string;
   state: State;
   classifier: Classifier;
   /** which classifier backs the "Try it" tab, shown in the UI */
@@ -21,6 +24,18 @@ export interface UiDeps {
 // Only answer requests addressed to localhost (blocks DNS rebinding from other sites).
 const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
 const MAX_BODY = 1_000_000;
+const OFFLINE_AFTER_MS = 90_000;
+
+const ControlSchema = z.object({ action: z.enum(['start', 'stop']) });
+
+function runStatus(deps: UiDeps) {
+  const age = heartbeatAgeMs(deps.dataDir, new Date());
+  return {
+    running: readControl(deps.dataDir).running,
+    online: age !== null && age < OFFLINE_AFTER_MS,
+    status: readStatus(deps.dataDir),
+  };
+}
 
 const TrySchema = z.object({
   from: z.string().max(500),
@@ -155,6 +170,30 @@ async function handle(deps: UiDeps, req: IncomingMessage, res: ServerResponse): 
       actions: cat?.actions ?? ['label'],
       mode: deps.mode,
     });
+  }
+
+  if (method === 'GET' && url.pathname === '/api/status') return send(res, 200, runStatus(deps));
+
+  if (method === 'POST' && url.pathname === '/api/control') {
+    const body = ControlSchema.safeParse(await readJson(req));
+    if (!body.success) return send(res, 400, { error: 'action must be "start" or "stop"' });
+    if (body.data.action === 'start') {
+      try {
+        loadConfigFile(deps.configPath);
+      } catch (err) {
+        return send(res, 400, { error: `config is invalid, fix it first: ${String(err)}` });
+      }
+      if (!runStatus(deps).online) {
+        return send(res, 409, {
+          error:
+            'The Postmaster container is not running. Start it with: docker compose up -d postmaster',
+        });
+      }
+      writeControl(deps.dataDir, true);
+    } else {
+      writeControl(deps.dataDir, false);
+    }
+    return send(res, 200, runStatus(deps));
   }
 
   return send(res, 404, { error: 'not found' });

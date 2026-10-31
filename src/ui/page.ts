@@ -47,6 +47,8 @@ td.trunc{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowr
 <body>
 <header>
   <h1>Postmaster</h1><span id="mode" class="badge"></span><span class="grow"></span>
+  <span id="run" class="badge src">...</span>
+  <button id="runbtn" class="btn" disabled>Start</button>
   <span id="dirty" class="muted" hidden>Unsaved changes</span>
   <button id="save" class="btn" disabled>Save</button>
 </header>
@@ -56,7 +58,7 @@ td.trunc{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowr
 <script>
 var ACTIONS=['label','star','mark_read','archive'];
 var TABS=[['activity','Activity'],['categories','Categories'],['rules','Rules'],['settings','Settings'],['try','Try it']];
-var cfg=null,dirty=false,tab='activity',timer=null,toastTimer=null;
+var cfg=null,dirty=false,tab='activity',timer=null,toastTimer=null,runState=null;
 
 function h(tag,props){
   var e=document.createElement(tag),val,hasVal=false,chk,hasChk=false;
@@ -91,6 +93,32 @@ function catSelect(value,onchange){
 }
 function field(label,input,hint){return h('div',null,h('label',null,label),input,hint?h('div',{class:'hint'},hint):null)}
 
+/* ---------- Start / Stop ---------- */
+function drawRun(){
+  var b=$('#run'),btn=$('#runbtn');
+  if(!runState){b.textContent='status unavailable';b.className='badge src';btn.disabled=true;return}
+  var st=runState.status||{};
+  if(!runState.online){b.textContent='Poller offline';b.className='badge dry';btn.textContent='Start';btn.disabled=true;btn.title='Run: docker compose up -d postmaster';return}
+  btn.disabled=false;btn.title='';
+  if(!runState.running){b.textContent='Stopped';b.className='badge src';btn.textContent='Start';return}
+  var p=st.progress;
+  b.textContent=st.state==='scanning'?('Running: '+(p?p.done+' / '+p.total+' emails':'checking mail...')):'Running: waiting for next check';
+  b.className='badge live';btn.textContent='Stop';
+}
+async function refreshStatus(){
+  try{runState=await api('/api/status')}catch(e){runState=null}
+  drawRun();
+}
+async function toggleRun(){
+  var starting=!(runState&&runState.running);
+  if(starting&&cfg&&!cfg.settings.dry_run&&!confirm('Dry run is OFF. Postmaster will start labeling and archiving your real mail. Start?'))return;
+  if(starting&&dirty&&!confirm('You have unsaved changes that Postmaster will not use. Start anyway?'))return;
+  try{
+    runState=await api('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:starting?'start':'stop'})});
+    drawRun();toast(starting?'Started. It checks your mail now, then every few minutes.':'Stopping after the current email.');
+  }catch(e){toast(e.message,true)}
+}
+
 /* ---------- Activity ---------- */
 async function activity(){
   var root=$('#main');
@@ -98,7 +126,9 @@ async function activity(){
   if(tab!=='activity')return;
   var counts={};d.decisions.forEach(function(x){counts[x.category]=(counts[x.category]||0)+1});
   fill(root,
+    runState&&runState.status&&runState.status.lastError?h('div',{class:'card',style:'color:var(--bad);white-space:pre-wrap'},'Last error: '+runState.status.lastError):null,
     h('div',{class:'card'},
+      runState&&runState.status&&runState.status.lastCycle?h('span',{class:'chip'},'Last check: '+runState.status.lastCycle.seen+' seen, '+runState.status.lastCycle.processed+' handled, '+runState.status.lastCycle.failed+' failed'+(runState.status.lastCycle.dryRun?' (dry run)':'')):null,
       h('span',{class:'chip'},'Model calls today: '+d.llmCallsToday+' / '+d.dailyCap),
       h('span',{class:'chip'},'Classifier for Try it: '+d.mode),
       Object.keys(counts).map(function(k){return h('span',{class:'chip'},catLabel(k)+': '+counts[k])}),
@@ -113,7 +143,7 @@ async function activity(){
         h('td',null,Math.round(x.confidence*100)+'%'),
         h('td',{title:x.reason},x.source),
         h('td',{class:x.applied?'':'muted'},x.applied?'applied':'dry run'))}))))
-    :h('div',{class:'card muted'},'No decisions yet. Start Postmaster and they will appear here, or use the Try it tab.'));
+    :h('div',{class:'card muted'},'No decisions yet. Press Start at the top to begin, or use the Try it tab.'));
 }
 
 /* ---------- Categories ---------- */
@@ -232,6 +262,8 @@ async function save(){
 }
 window.addEventListener('beforeunload',function(e){if(dirty){e.preventDefault();e.returnValue=''}});
 $('#save').addEventListener('click',save);
+$('#runbtn').addEventListener('click',toggleRun);
+refreshStatus();setInterval(refreshStatus,3000);
 api('/api/config').then(function(c){cfg=c;render()}).catch(function(e){$('#main').textContent=e.message});
 </script>
 </body>

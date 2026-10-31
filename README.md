@@ -10,7 +10,8 @@ cp .env.example .env                  # fill in Azure values, or set POSTMASTER_
 
 docker compose run --rm ci            # lint, format, typecheck, tests, config check, build
 docker compose run --rm --service-ports auth   # one-time login, writes secrets/token.json
-docker compose up -d --build          # start it (dry_run is true by default)
+docker compose up -d --build          # starts the containers, but Postmaster stays idle
+# open http://localhost:8080 and press Start (dry_run is true by default)
 docker compose logs -f                # read the decisions
 ```
 
@@ -22,6 +23,10 @@ When a day of logs looks right, set `dry_run: false` in `config/categories.yaml`
 | `docker compose run --rm ci`                   | Everything CI runs                                      |
 | `docker compose run --rm undo <ISO timestamp>` | Remove labels applied since a time                      |
 | `docker compose run --rm eval --mock`          | Accuracy and confusion matrix over `eval/dataset.jsonl` |
+
+## Start and Stop
+
+`docker compose up` never starts processing your mail by itself. Every time the containers start, Postmaster is **stopped** until you press **Start** in the UI. **Stop** finishes the current email and then pauses. If something is missing (for example `secrets/token.json`), pressing Start shows what to fix instead of crashing.
 
 ## Admin UI
 

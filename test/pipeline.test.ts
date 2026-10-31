@@ -206,6 +206,30 @@ describe('runCycle', () => {
     expect(mail.modifies).toEqual([]);
   });
 
+  it('stops between messages when asked, holds the cursor, and reports progress', async () => {
+    const mail = new FakeMail();
+    mail.add(makeMessage({ id: 'a' }));
+    mail.add(makeMessage({ id: 'b', from: 'x@y.com' }));
+    const state = new State(':memory:');
+    const progress: number[] = [];
+    let stop = false;
+    const ctx = {
+      ...makeContext({ mail, state }),
+      hooks: {
+        shouldStop: () => stop,
+        onProgress: (done: number) => {
+          progress.push(done);
+          stop = true; // Stop pressed after the first email
+        },
+      },
+    };
+    const stats = await runCycle(ctx);
+    expect(stats).toEqual({ seen: 2, processed: 1, failed: 0, stopped: true });
+    expect(progress).toEqual([1]);
+    expect(mail.modifies.map((m) => m.id)).toEqual(['a']);
+    expect(state.getCursor()).toBeNull();
+  });
+
   it('holds the cursor back when the classifier fails, and retries the next cycle', async () => {
     const mail = new FakeMail();
     mail.add(makeMessage());

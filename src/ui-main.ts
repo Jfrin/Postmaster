@@ -30,9 +30,12 @@ if (env.POSTMASTER_MOCK === '0') {
 }
 
 const state = new State(join(env.DATA_DIR, 'state.db'));
-createUiServer({ configPath: env.CONFIG_PATH, state, classifier, mode }).listen(
-  env.PORT,
-  '0.0.0.0',
-  () =>
-    log.info({ port: env.PORT, mode }, 'Postmaster UI listening (publish it on 127.0.0.1 only)'),
+createUiServer({
+  configPath: env.CONFIG_PATH,
+  dataDir: env.DATA_DIR,
+  state,
+  classifier,
+  mode,
+}).listen(env.PORT, '0.0.0.0', () =>
+  log.info({ port: env.PORT, mode }, 'Postmaster UI listening (publish it on 127.0.0.1 only)'),
 );

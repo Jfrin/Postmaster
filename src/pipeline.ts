@@ -5,7 +5,21 @@ import { matchRule } from './rules.js';
 import type { State } from './state.js';
 import type { Action, Decision, EmailMessage, MailClient, ModifyRequest } from './types.js';
 
+export interface CycleHooks {
+  /** Checked between messages; true ends the cycle early (the Stop button). */
+  shouldStop?: () => boolean;
+  onProgress?: (done: number, total: number) => void;
+}
+
+export interface CycleStats {
+  seen: number;
+  processed: number;
+  failed: number;
+  stopped?: boolean;
+}
+
 export interface BaseContext {
+  hooks?: CycleHooks;
   config: Config;
   mail: MailClient;
   classifier: Classifier;
@@ -126,9 +140,7 @@ export async function processMessage(ctx: PipelineContext, msg: EmailMessage): P
   return dry ? 'dry_run' : 'applied';
 }
 
-export async function runCycle(
-  base: BaseContext,
-): Promise<{ seen: number; processed: number; failed: number }> {
+export async function runCycle(base: BaseContext): Promise<CycleStats> {
   const { mail, state, config, log } = base;
 
   // Labels are created only when not in dry run, so a dry run changes nothing in Gmail.
@@ -145,7 +157,13 @@ export async function runCycle(
   const { ids, cursor } = await mail.listNew(state.getCursor(), config.settings.backlog_days);
   let processed = 0;
   let failed = 0;
+  let stopped = false;
+  let done = 0;
   for (const id of ids) {
+    if (base.hooks?.shouldStop?.()) {
+      stopped = true;
+      break;
+    }
     try {
       const msg = await mail.fetchMessage(id, config.settings.max_body_chars);
       if ((await processMessage(ctx, msg)) !== 'skipped') processed++;
@@ -153,7 +171,10 @@ export async function runCycle(
       failed++; // one bad message never stops the rest
       log.error({ err: String(err), id }, 'message failed');
     }
+    base.hooks?.onProgress?.(++done, ids.length);
   }
-  if (failed === 0) state.setCursor(cursor); // retry next cycle if anything failed
-  return { seen: ids.length, processed, failed };
+  // Hold the cursor back if anything failed or we were stopped; finished messages are skipped
+  // next time, so nothing is done twice.
+  if (failed === 0 && !stopped) state.setCursor(cursor);
+  return { seen: ids.length, processed, failed, ...(stopped ? { stopped: true } : {}) };
 }
