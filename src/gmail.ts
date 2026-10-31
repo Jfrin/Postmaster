@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gmail as gmailApi, type gmail_v1 } from '@googleapis/gmail';
 import { OAuth2Client } from 'google-auth-library';
+import { GmailQuota } from './gmail-quota.js';
 import { cleanBody, parseAddress } from './text.js';
 import type { EmailMessage, MailClient, ModifyRequest } from './types.js';
 
@@ -52,6 +53,7 @@ export function extractBody(part: gmail_v1.Schema$MessagePart | undefined): {
 }
 
 export class GmailClient implements MailClient {
+  private readonly quota = new GmailQuota();
   /** Takes the Gmail service so tests can pass a mock. */
   constructor(private readonly gmail: gmail_v1.Gmail) {}
 
@@ -60,21 +62,28 @@ export class GmailClient implements MailClient {
   }
 
   async ensureLabels(names: string[], create: boolean): Promise<Map<string, string>> {
-    const res = await this.gmail.users.labels.list({ userId: 'me' });
+    const res = await this.quota.run(1, () =>
+      this.gmail.users.labels.list({ userId: 'me' }, { retry: false }),
+    );
     const byName = new Map<string, string>();
     for (const l of res.data.labels ?? []) if (l.name && l.id) byName.set(l.name, l.id);
     const out = new Map<string, string>();
     for (const name of names) {
       let id = byName.get(name);
       if (!id && create) {
-        const made = await this.gmail.users.labels.create({
-          userId: 'me',
-          requestBody: {
-            name,
-            labelListVisibility: 'labelShow',
-            messageListVisibility: 'show',
-          },
-        });
+        const made = await this.quota.run(5, () =>
+          this.gmail.users.labels.create(
+            {
+              userId: 'me',
+              requestBody: {
+                name,
+                labelListVisibility: 'labelShow',
+                messageListVisibility: 'show',
+              },
+            },
+            { retry: false },
+          ),
+        );
         id = made.data.id ?? undefined;
       }
       if (id) out.set(name, id);
@@ -83,7 +92,9 @@ export class GmailClient implements MailClient {
   }
 
   async listNew(cursor: string | null, backlogDays: number) {
-    const profile = await this.gmail.users.getProfile({ userId: 'me' });
+    const profile = await this.quota.run(1, () =>
+      this.gmail.users.getProfile({ userId: 'me' }, { retry: false }),
+    );
     const newCursor = profile.data.historyId ?? cursor ?? '';
 
     if (cursor) {
@@ -91,13 +102,18 @@ export class GmailClient implements MailClient {
         const ids = new Set<string>();
         let pageToken: string | undefined;
         do {
-          const res = await this.gmail.users.history.list({
-            userId: 'me',
-            startHistoryId: cursor,
-            historyTypes: ['messageAdded'],
-            labelId: 'INBOX',
-            pageToken,
-          });
+          const res = await this.quota.run(2, () =>
+            this.gmail.users.history.list(
+              {
+                userId: 'me',
+                startHistoryId: cursor,
+                historyTypes: ['messageAdded'],
+                labelId: 'INBOX',
+                pageToken,
+              },
+              { retry: false },
+            ),
+          );
           for (const h of res.data.history ?? []) {
             for (const m of h.messagesAdded ?? []) if (m.message?.id) ids.add(m.message.id);
           }
@@ -113,11 +129,17 @@ export class GmailClient implements MailClient {
     const ids: string[] = [];
     let pageToken: string | undefined;
     do {
-      const res = await this.gmail.users.messages.list({
-        userId: 'me',
-        q: `in:inbox newer_than:${backlogDays}d`,
-        pageToken,
-      });
+      const res = await this.quota.run(5, () =>
+        this.gmail.users.messages.list(
+          {
+            userId: 'me',
+            q: `in:inbox newer_than:${backlogDays}d`,
+            pageToken,
+            maxResults: 500,
+          },
+          { retry: false },
+        ),
+      );
       for (const m of res.data.messages ?? []) if (m.id) ids.push(m.id);
       pageToken = res.data.nextPageToken ?? undefined;
     } while (pageToken);
@@ -125,7 +147,9 @@ export class GmailClient implements MailClient {
   }
 
   async fetchMessage(id: string, maxBodyChars: number): Promise<EmailMessage> {
-    const res = await this.gmail.users.messages.get({ userId: 'me', id, format: 'full' });
+    const res = await this.quota.run(60, () =>
+      this.gmail.users.messages.get({ userId: 'me', id, format: 'full' }, { retry: false }),
+    );
     const m = res.data;
     const from = header(m, 'From');
     const { address, domain } = parseAddress(from);
@@ -146,10 +170,15 @@ export class GmailClient implements MailClient {
 
   async modify(id: string, change: ModifyRequest): Promise<void> {
     if (!change.add.length && !change.remove.length) return;
-    await this.gmail.users.messages.modify({
-      userId: 'me',
-      id,
-      requestBody: { addLabelIds: change.add, removeLabelIds: change.remove },
-    });
+    await this.quota.run(5, () =>
+      this.gmail.users.messages.modify(
+        {
+          userId: 'me',
+          id,
+          requestBody: { addLabelIds: change.add, removeLabelIds: change.remove },
+        },
+        { retry: false },
+      ),
+    );
   }
 }

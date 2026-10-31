@@ -62,7 +62,7 @@ export class FakeMail implements MailClient {
     }
     return Promise.resolve(out);
   }
-  listNew() {
+  listNew(_cursor: string | null, _backlogDays: number) {
     return Promise.resolve({ ids: [...this.messages.keys()], cursor: '100' });
   }
   fetchMessage(id: string) {

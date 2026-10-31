@@ -1,5 +1,6 @@
 import { State } from '../src/state.js';
-import { describe, expect, it } from 'vitest';
+import { GmailQuotaError } from '../src/gmail-quota.js';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildModify,
   labelName,
@@ -187,6 +188,119 @@ describe('only_if_unread categories', () => {
 });
 
 describe('runCycle', () => {
+  it('ends the cycle on Gmail quota exhaustion, draining writes and preserving retry state', async () => {
+    const mail = new FakeMail();
+    for (let i = 0; i < 20; i++) mail.add(makeMessage({ id: `m${i}` }));
+    const state = new State(':memory:');
+    state.setCursor('old-cursor');
+    for (let i = 0; i < 3; i++) state.observeSender('orders@shop.example', 'receipts', 0.95);
+    const ctx = makeContext({ mail, state });
+    const quota = new GmailQuotaError(Date.now() + 60_000, new Error('quota exceeded'));
+    const modify = mail.modify.bind(mail);
+    const fetchMessage = vi.spyOn(mail, 'fetchMessage');
+    mail.modify = async (id, change) => {
+      if (id === 'm1') throw quota;
+      await modify(id, change);
+    };
+    await expect(runCycle(ctx)).rejects.toBe(quota);
+    expect(fetchMessage).toHaveBeenCalledTimes(8);
+    expect(mail.modifies).toHaveLength(7);
+    expect(state.hasDecision('m1')).toBe(false);
+    expect(state.getCursor()).toBe('old-cursor');
+    mail.modify = modify;
+    expect(await runCycle(ctx)).toEqual({ seen: 20, processed: 13, failed: 0 });
+    expect(mail.modifies).toHaveLength(20);
+  });
+
+  it('overlaps Gmail reads and cached writes with a bounded window, and drains writes on Stop', async () => {
+    const mail = new FakeMail();
+    for (let i = 0; i < 20; i++) mail.add(makeMessage({ id: `m${i}` }));
+    const state = new State(':memory:');
+    for (let i = 0; i < 3; i++) state.observeSender('orders@shop.example', 'receipts', 0.95);
+    const classifier = new FakeClassifier(new Error('cache must bypass the model'));
+    let releaseReads!: () => void;
+    let releaseWrites!: () => void;
+    const reads = new Promise<void>((resolve) => (releaseReads = resolve));
+    const writes = new Promise<void>((resolve) => (releaseWrites = resolve));
+    const fetchMessage = mail.fetchMessage.bind(mail);
+    const modify = mail.modify.bind(mail);
+    let fetches = 0;
+    let modifications = 0;
+    let stop = false;
+    const progress: number[] = [];
+    mail.fetchMessage = async (id) => {
+      fetches++;
+      await reads;
+      return fetchMessage(id);
+    };
+    mail.modify = async (id, change) => {
+      modifications++;
+      await writes;
+      return modify(id, change);
+    };
+    const cycle = runCycle({
+      ...makeContext({ mail, state, classifier }),
+      hooks: { shouldStop: () => stop, onProgress: (done) => progress.push(done) },
+    });
+    try {
+      await vi.waitFor(() => expect(fetches).toBe(8));
+      expect(modifications).toBe(0);
+      releaseReads();
+      await vi.waitFor(() => expect(modifications).toBe(8));
+      expect(state.recent(100)).toHaveLength(0); // nothing recorded before Gmail succeeds
+      expect(fetches).toBe(8); // no unbounded read-ahead
+      stop = true;
+    } finally {
+      stop = true;
+      releaseReads();
+      releaseWrites();
+      await cycle;
+    }
+    expect(await cycle).toEqual({ seen: 20, processed: 8, failed: 0, stopped: true });
+    expect(progress).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(state.recent(100)).toHaveLength(8);
+    expect(state.getCursor()).toBeNull();
+    expect(classifier.calls).toBe(0);
+    expect(mail.modifies).toHaveLength(8);
+  });
+
+  it('retries failed cached writes without repeating successful ones', async () => {
+    const mail = new FakeMail();
+    for (let i = 0; i < 12; i++) mail.add(makeMessage({ id: `m${i}` }));
+    const state = new State(':memory:');
+    for (let i = 0; i < 3; i++) state.observeSender('orders@shop.example', 'receipts', 0.95);
+    const classifier = new FakeClassifier(new Error('cache must bypass the model'));
+    const ctx = makeContext({ mail, state, classifier });
+    const modify = mail.modify.bind(mail);
+    mail.modify = async (id, change) => {
+      if (id === 'm3') throw new Error('Gmail temporarily unavailable');
+      await modify(id, change);
+    };
+    expect(await runCycle(ctx)).toEqual({ seen: 12, processed: 11, failed: 1 });
+    expect(state.getCursor()).toBeNull();
+    expect(state.hasDecision('m3')).toBe(false);
+    mail.modify = modify;
+    expect(await runCycle(ctx)).toEqual({ seen: 12, processed: 1, failed: 0 });
+    expect(new Set(mail.modifies.map((m) => m.id)).size).toBe(12);
+    expect(mail.modifies).toHaveLength(12);
+    expect(state.getCursor()).toBe('100');
+    expect(classifier.calls).toBe(0);
+  });
+
+  it('learns a sender serially before using the fast path, including in dry run', async () => {
+    const mail = new FakeMail();
+    for (let i = 0; i < 12; i++) mail.add(makeMessage({ id: `m${i}` }));
+    const classifier = new FakeClassifier({ category: 'receipts', confidence: 0.95, reason: 'ok' });
+    const config = makeConfig((c) => (c.settings.dry_run = true));
+    const ctx = makeContext({ mail, classifier, config });
+    expect(await runCycle(ctx)).toEqual({ seen: 12, processed: 12, failed: 0 });
+    expect(classifier.calls).toBe(3);
+    expect(ctx.state.recent(100).filter((d) => d.source === 'cache')).toHaveLength(9);
+    expect(mail.modifies).toHaveLength(0);
+    expect(await runCycle(ctx)).toEqual({ seen: 12, processed: 0, failed: 0 });
+    expect(classifier.calls).toBe(3);
+  });
+
   it('creates labels only when live, advances the cursor, and continues past a bad message', async () => {
     const mail = new FakeMail();
     mail.add(makeMessage({ id: 'ok1' }));

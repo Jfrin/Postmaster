@@ -1,5 +1,6 @@
 import type { Classifier } from './classifier.js';
 import type { Config } from './config.js';
+import { GmailQuotaError } from './gmail-quota.js';
 import { readControl, touchHeartbeat, writeControl, writeStatus, type Status } from './control.js';
 import type { Logger } from './logger.js';
 import { runCycle } from './pipeline.js';
@@ -52,11 +53,13 @@ export async function runPoller(o: PollerOptions): Promise<void> {
 
   let mail: MailClient | null = null;
   let classifier: Classifier | null = null;
+  let scannedBacklogDays: number | null = null;
 
   while (!o.exiting()) {
     touchHeartbeat(o.dataDir);
 
     if (!wanted()) {
+      scannedBacklogDays = null;
       if (status.state !== 'stopped') save({ state: 'stopped', progress: null });
       await o.sleep(2000);
       continue;
@@ -73,10 +76,12 @@ export async function runPoller(o: PollerOptions): Promise<void> {
     }
 
     const config = o.reloadConfig();
+    let waitSeconds = config.settings.poll_interval_seconds;
     save({ state: 'scanning', progress: null, lastError: null });
     try {
       const stats = await runCycle({
         config,
+        scanBacklog: scannedBacklogDays !== config.settings.backlog_days,
         mail,
         classifier,
         state: o.state,
@@ -90,6 +95,9 @@ export async function runPoller(o: PollerOptions): Promise<void> {
           },
         },
       });
+      // Start and lookback changes must revisit older inbox mail. Only a completed scan
+      // switches back to incremental history; failed or stopped scans need another pass.
+      if (!stats.stopped && stats.failed === 0) scannedBacklogDays = config.settings.backlog_days;
       save({
         state: stats.stopped ? 'stopped' : 'idle',
         progress: null,
@@ -97,13 +105,19 @@ export async function runPoller(o: PollerOptions): Promise<void> {
       });
       o.log.info({ ...stats, dry_run: config.settings.dry_run }, 'cycle complete');
     } catch (err) {
+      if (err instanceof GmailQuotaError) {
+        waitSeconds = Math.max(waitSeconds, Math.ceil((err.retryAt - Date.now()) / 1000));
+      }
       o.log.error({ err: String(err) }, 'cycle failed');
       save({ state: 'idle', progress: null, lastError: String(err) });
     }
 
     // wait for the next check, but notice Stop within a second
-    for (let i = 0; i < config.settings.poll_interval_seconds && !o.exiting(); i++) {
-      if (!wanted()) break;
+    for (let i = 0; i < waitSeconds && !o.exiting(); i++) {
+      if (!wanted()) {
+        scannedBacklogDays = null;
+        break;
+      }
       touchHeartbeat(o.dataDir);
       await o.sleep(1000);
     }

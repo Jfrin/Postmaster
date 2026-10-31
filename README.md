@@ -26,7 +26,9 @@ When a day of logs looks right, set `dry_run: false` in `config/categories.yaml`
 
 ## Start and Stop
 
-`docker compose up` never starts processing your mail by itself. Every time the containers start, Postmaster is **stopped** until you press **Start** in the UI. **Stop** finishes the current email and then pauses. If something is missing (for example `secrets/token.json`), pressing Start shows what to fix instead of crashing.
+Gmail requests share a quota-unit limiter (4,800 units/minute initially). If Gmail throttles the account, Postmaster preserves progress, waits at least a minute (or Gmail's `Retry-After`), and retries on a later check at a reduced rate. Repeated throttling increases the cooldown.
+
+`docker compose up` never starts processing your mail by itself. Every time the containers start, Postmaster is **stopped** until you press **Start** in the UI. **Start** scans the configured inbox lookback, skipping already-processed emails, then checks new arrivals on the poll interval. Changing the lookback triggers another inbox scan on the next check. **Stop** finishes in-flight emails and then pauses. If something is missing (for example `secrets/token.json`), pressing Start shows what to fix instead of crashing.
 
 ## Admin UI
 

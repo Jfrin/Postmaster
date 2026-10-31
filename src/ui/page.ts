@@ -117,7 +117,7 @@ function drawRun(){
   btn.disabled=false;btn.title='';
   if(!runState.running){b.textContent='Stopped';b.className='badge src';btn.textContent='Start';return}
   var p=st.progress;
-  b.textContent=st.state==='scanning'?('Running: '+(p?p.done+' / '+p.total+' emails':'checking mail...')):'Running: waiting for next check';
+  b.textContent=st.state==='scanning'?('Running: '+(p?p.done+' / '+p.total+' emails':'checking mail...')):(st.lastCycle&&st.lastCycle.seen===0?'No new mail found - waiting for next check':'Scan finished - waiting for next check');
   b.className='badge live';btn.textContent='Stop';
 }
 async function refreshStatus(){
@@ -130,7 +130,7 @@ async function toggleRun(){
   if(starting&&dirty&&!confirm('You have unsaved changes that Postmaster will not use. Start anyway?'))return;
   try{
     runState=await api('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:starting?'start':'stop'})});
-    drawRun();toast(starting?'Started. It checks your mail now, then every few minutes.':'Stopping after the current email.');
+    drawRun();toast(starting?'Started. Scanning the inbox lookback, then checking for new mail every few minutes.':'Stopping after in-flight emails finish.');
   }catch(e){toast(e.message,true)}
 }
 
@@ -285,7 +285,7 @@ function settings(){
       num('daily_llm_call_cap','Daily model call cap','hard stop on spend'),
       num('poll_interval_seconds','Poll interval (seconds)',''),
       num('max_body_chars','Body characters sent to model',''),
-      num('backlog_days','First-run backlog (days)',''))));
+      num('backlog_days','Inbox lookback (days)','Scanned on Start and on the next check after changing this value. Already-processed emails are skipped.'))));
 }
 
 /* ---------- Try it ---------- */

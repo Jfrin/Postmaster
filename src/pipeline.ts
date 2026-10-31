@@ -1,12 +1,13 @@
 import type { Config } from './config.js';
 import { InvalidModelOutputError, type Classifier } from './classifier.js';
+import { GmailQuotaError } from './gmail-quota.js';
 import type { Logger } from './logger.js';
 import { matchRule } from './rules.js';
 import type { State } from './state.js';
 import type { Action, Decision, EmailMessage, MailClient, ModifyRequest } from './types.js';
 
 export interface CycleHooks {
-  /** Checked between messages; true ends the cycle early (the Stop button). */
+  /** Stops scheduling messages; already in-flight cached writes finish before returning. */
   shouldStop?: () => boolean;
   onProgress?: (done: number, total: number) => void;
 }
@@ -20,6 +21,8 @@ export interface CycleStats {
 
 export interface BaseContext {
   hooks?: CycleHooks;
+  /** Scan the configured inbox window even when a history cursor already exists. */
+  scanBacklog?: boolean;
   config: Config;
   mail: MailClient;
   classifier: Classifier;
@@ -52,14 +55,16 @@ export function buildModify(actions: Action[], labelId: string | undefined): Mod
   return change;
 }
 
-export async function decide(ctx: PipelineContext, msg: EmailMessage): Promise<Decision> {
-  const { config, state, classifier, log } = ctx;
-  const { settings } = config;
-
+function allowedCategories(config: Config, msg: EmailMessage) {
   // A category marked only_if_unread is not offered for mail that is already read: no rule, no
   // cache hit and no model answer can put it there.
   const unread = msg.labelIds.includes('UNREAD');
-  const allowed = config.categories.filter((c) => unread || !c.only_if_unread);
+  return config.categories.filter((c) => unread || !c.only_if_unread);
+}
+
+function localDecision(ctx: PipelineContext, msg: EmailMessage): Decision | null {
+  const { config, state } = ctx;
+  const allowed = allowedCategories(config, msg);
   const allowedIds = new Set(allowed.map((c) => c.id));
 
   const rule = matchRule(
@@ -74,6 +79,15 @@ export async function decide(ctx: PipelineContext, msg: EmailMessage): Promise<D
   if (cached && allowedIds.has(cached)) {
     return { category: cached, confidence: 1, source: 'cache', reason: 'sender cache' };
   }
+  return null;
+}
+
+export async function decide(ctx: PipelineContext, msg: EmailMessage): Promise<Decision> {
+  const { config, state, classifier, log } = ctx;
+  const { settings } = config;
+  const local = localDecision(ctx, msg);
+  if (local) return local;
+  const allowed = allowedCategories(config, msg);
 
   const now = ctx.now();
   if (state.llmCallsToday(now) >= settings.daily_llm_call_cap) {
@@ -154,30 +168,79 @@ export async function runCycle(base: BaseContext): Promise<CycleStats> {
   }
   const ctx: PipelineContext = { ...base, labelIds };
 
-  const { ids, cursor } = await mail.listNew(state.getCursor(), config.settings.backlog_days);
+  const listed = await mail.listNew(
+    base.scanBacklog ? null : state.getCursor(),
+    config.settings.backlog_days,
+  );
+  const ids = [...new Set(listed.ids)];
+  const cursor = listed.cursor;
   let processed = 0;
   let failed = 0;
   let stopped = false;
   let done = 0;
-  for (const id of ids) {
+  let quotaError: GmailQuotaError | null = null;
+  // Bound both read-ahead and cached writes. Gmail latency used to be paid twice per email,
+  // serially, even when classification was an instant local lookup.
+  const concurrency = 8;
+  const progress = () => base.hooks?.onProgress?.(++done, ids.length);
+  const process = async (msg: EmailMessage): Promise<void> => {
+    try {
+      if ((await processMessage(ctx, msg)) !== 'skipped') processed++;
+    } catch (err) {
+      if (err instanceof GmailQuotaError) quotaError = err;
+      failed++;
+      log.error({ err: String(err), id: msg.id }, 'message failed');
+    }
+    progress();
+  };
+  for (let offset = 0; offset < ids.length; offset += concurrency) {
     if (base.hooks?.shouldStop?.()) {
       stopped = true;
       break;
     }
-    // Messages already decided in an earlier run (or an earlier cycle) are not even fetched
-    // again. Live mode still lets a dry-run decision through so going live files it.
-    if (state.hasDecision(id, !config.settings.dry_run)) {
-      base.hooks?.onProgress?.(++done, ids.length);
-      continue;
+    const batch = ids.slice(offset, offset + concurrency);
+    const fetched = await Promise.allSettled(
+      batch.map(async (id) => {
+        // Live mode still files decisions that were only seen in dry run.
+        if (state.hasDecision(id, !config.settings.dry_run)) return null;
+        return mail.fetchMessage(id, config.settings.max_body_chars);
+      }),
+    );
+    const pending: Promise<void>[] = [];
+    for (const [index, result] of fetched.entries()) {
+      if (quotaError) break;
+      // The first email was started before fetching; finish it on Stop. The remaining
+      // reads are speculative and must not start new writes once Stop is requested.
+      if (index > 0 && base.hooks?.shouldStop?.()) {
+        stopped = true;
+        break;
+      }
+      if (result.status === 'rejected') {
+        if (result.reason instanceof GmailQuotaError) quotaError = result.reason;
+        failed++;
+        log.error({ err: String(result.reason), id: batch[index] }, 'message failed');
+        progress();
+      } else if (!result.value) {
+        progress();
+      } else if (localDecision(ctx, result.value)?.source === 'cache') {
+        pending.push(process(result.value));
+      } else {
+        // Keep model learning ordered: after three confident answers, later messages from
+        // that sender can use the cache rather than making redundant concurrent model calls.
+        await Promise.all(pending);
+        pending.length = 0;
+        if (quotaError) break;
+        if (index > 0 && base.hooks?.shouldStop?.()) {
+          stopped = true;
+          break;
+        }
+        await process(result.value);
+      }
     }
-    try {
-      const msg = await mail.fetchMessage(id, config.settings.max_body_chars);
-      if ((await processMessage(ctx, msg)) !== 'skipped') processed++;
-    } catch (err) {
-      failed++; // one bad message never stops the rest
-      log.error({ err: String(err), id }, 'message failed');
-    }
-    base.hooks?.onProgress?.(++done, ids.length);
+    await Promise.all(pending);
+    // Drain writes, preserve the cursor, and let the poller wait out the shared cooldown.
+    if (quotaError) throw quotaError;
+    if (stopped) break;
   }
   // Hold the cursor back if anything failed or we were stopped; finished messages are skipped
   // next time, so nothing is done twice.

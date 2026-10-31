@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { gmail_v1 } from '@googleapis/gmail';
 import { extractBody, GmailClient } from '../src/gmail.js';
 
@@ -38,6 +38,33 @@ describe('GmailClient (mocked Gmail service)', () => {
   type Fn = (...a: never[]) => unknown;
   const make = (u: Record<string, Record<string, Fn>>) =>
     new GmailClient({ users: u } as unknown as gmail_v1.Gmail);
+
+  it('shares quota accounting between full-message fetches and writes, disabling hidden retries', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const calls: { time: number; options: unknown }[] = [];
+      const request = (async (_params: unknown, options: unknown) => {
+        calls.push({ time: Date.now(), options });
+        return { data: {} };
+      }) as Fn;
+      const client = make({ messages: { get: request, modify: request } });
+      const batch = Promise.all([
+        client.fetchMessage('a', 100),
+        client.modify('a', { add: ['L'], remove: [] }),
+        client.fetchMessage('b', 100),
+      ]);
+      await vi.runAllTimersAsync();
+      await batch;
+      expect(calls).toEqual([
+        { time: 0, options: { retry: false } },
+        { time: 750, options: { retry: false } },
+        { time: 813, options: { retry: false } },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('ensureLabels returns existing ids and creates only when asked', async () => {
     const created: string[] = [];
