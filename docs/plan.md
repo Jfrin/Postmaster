@@ -22,7 +22,7 @@ Also decide which categories and actions to use, whether to archive newsletters 
 
 ## Current baseline
 
-The repository contains a single-user TypeScript/Node app, a Docker Compose deployment, offline tests, and a local dashboard. Implementation exists; this checklist does **not** imply that live Gmail, Azure, Docker, or a remote deployment has been verified.
+The repository contains a single-user TypeScript/Node app, a Docker Compose deployment, offline tests, and a local dashboard. A successful local or integration check does not imply that remote deployment or beta readiness has been verified.
 
 Checked items below mean the implementation or configuration exists in the repository; they do not assert that tests or external deployments were run for this review.
 
@@ -46,12 +46,16 @@ Checked items below mean the implementation or configuration exists in the repos
 
 ## Phase 0: Validate and prepare locally
 
-- [ ] Confirm Google Cloud project ownership, enable Gmail API, configure the OAuth consent screen, and set up the desktop OAuth client and local token for the initial account.
-- [ ] Configure the Azure OpenAI endpoint, deployment, and credentials; confirm access and test a completion. Alternatively use the mock classifier for offline evaluation.
-- [ ] Review shipped categories, action defaults, body length, model-call cap, and lookback. Start in dry run and verify decisions before allowing live changes.
-- [ ] Run local checks and offline tests (`npm run ci` or the Compose CI service), and verify Docker Compose from a fresh setup. Confirm restart leaves processing stopped and Start respects persisted state.
+- [x] Verify the existing Gmail credentials with a profile request without reading or changing messages.
+- [ ] Confirm Google Cloud project ownership, OAuth consent screen, Testing/production status, and the intended account. Check token expiry and reconnect requirements.
+- [x] Verify the configured Azure OpenAI deployment with a synthetic classification. This makes a paid model request but does not use real email.
+- [x] Run local CI and offline tests, and build and run the runtime image in an isolated Compose setup. Verify a synthetic mock preview and that startup/restart reset processing to stopped.
+- [x] Run a small synthetic evaluation using the mock classifier. This validates the evaluation path, not real-world model accuracy.
+- [x] Confirm an existing GitHub CI run succeeded, including Node 22/24 checks, Docker smoke, dependency audit, and secret scanning. Newly modified files still need their own GitHub CI run after push.
+- [ ] Review the **existing live config** before starting: it was found with `dry_run: false` and a 3,650-day lookback. Choose categories, actions, body length, call cap, and lookback; enable dry run and review decisions before allowing live changes. Existing settings were not overwritten.
+- [ ] Verify Start and persisted state with the intended inbox in dry run; do not treat the isolated mock preview as a live Gmail dry run.
 - [ ] Evaluate classification on an appropriately protected, labeled sample; compare candidate models and a held-out set, then choose a confidence threshold. Never commit real email or credentials. Avoid promising a model cost before measuring token usage and current prices.
-- [ ] Confirm GitHub CI and its Docker smoke tests and dependency/secret scans run successfully; configure branch protection as appropriate. Keep regression tests, synthetic fixtures, the mock classifier, and offline tests working.
+- [ ] Configure branch protection as appropriate; `main` was unprotected when checked. Keep regression tests, synthetic fixtures, the mock classifier, and offline tests working.
 
 **Exit:** the single-user app runs locally in dry run, its safety controls are understood, and live integrations have been tested separately.
 

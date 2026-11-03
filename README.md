@@ -7,6 +7,7 @@ Postmaster classifies incoming email using configurable rules, a learned sender 
 **TypeScript · Node.js · Gmail API · Azure OpenAI · SQLite · Docker**
 
 See the [project plan](docs/plan.md) for the canonical roadmap and deployment decisions.
+For private VM deployment, backups, and monitoring, see the [Azure operations runbook](docs/azure-operations.md).
 
 ## Highlights
 
@@ -105,6 +106,14 @@ For evaluation, create `eval/dataset.jsonl` with one synthetic example per line,
 ```
 
 The report includes accuracy and a confusion matrix. Omit `--mock` to evaluate the configured Azure deployment.
+
+To check the evaluation path without real email or paid model calls, use the included synthetic examples:
+
+```bash
+docker compose run --rm -e EVAL_DATASET=eval/synthetic.jsonl -e CONFIG_PATH=config/categories.default.yaml eval --mock
+```
+
+This is a smoke test, not a measure of model accuracy. For integration checks, `docker compose run --rm ci npx tsx scripts/smoke-azure.ts` classifies one synthetic message using Azure (and may incur charges). `docker compose run --rm auth npx tsx scripts/smoke-gmail.ts` checks Gmail authorization via the profile endpoint without reading or changing messages; token refresh may update `secrets/token.json`.
 
 ## Architecture and testing
 

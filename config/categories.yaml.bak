@@ -3,11 +3,11 @@ settings:
   label_prefix: AI/
   confidence_threshold: 0.7
   fallback_category: needs_review
-  dry_run: false
+  dry_run: true
   poll_interval_seconds: 300
   max_body_chars: 1500
   daily_llm_call_cap: 2000
-  backlog_days: 400
+  backlog_days: 3650
 rules:
   - match:
       from_domain: github.com

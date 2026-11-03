@@ -1,0 +1,3 @@
+{$DEMO_HOST} {
+	reverse_proxy auth:4180
+}

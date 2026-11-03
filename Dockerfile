@@ -19,6 +19,7 @@ WORKDIR /srv
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /srv/dist ./dist
+COPY --from=build /srv/config/categories.default.yaml ./config/categories.default.yaml
 # The built-in "node" user is uid 1000, so it can write ./data on a typical Linux VM.
 USER node
 CMD ["node", "dist/main.js"]

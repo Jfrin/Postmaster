@@ -70,6 +70,14 @@ jobs:
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
 
+  operations:
+    name: Encrypted backup and monitoring tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y age
+      - run: python3 -m unittest discover -s test -p '*_test.py' -v
+
   secrets:
     name: No secrets committed
     runs-on: ubuntu-latest

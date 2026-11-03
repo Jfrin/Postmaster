@@ -1,0 +1,8 @@
+{"from":"orders@example.com","subject":"Your order shipped","body":"A package is on the way.","label":"receipts"}
+{"from":"shop@example.com","subject":"Your receipt","body":"Thank you for your purchase.","label":"receipts"}
+{"from":"accounts@example.com","subject":"Password reset","body":"A reset was requested.","label":"security"}
+{"from":"accounts@example.com","subject":"Verification code","body":"Your one-time code is 000000.","label":"security"}
+{"from":"offers@example.com","subject":"Summer sale","body":"Save on selected items.","label":"promotions"}
+{"from":"offers@example.com","subject":"Discount available","body":"See the offer details.","label":"promotions"}
+{"from":"news@example.com","subject":"Weekly digest","body":"This week's headlines.","label":"newsletters"}
+{"from":"person@example.com","subject":"Hello","body":"How are you?","label":"needs_review"}

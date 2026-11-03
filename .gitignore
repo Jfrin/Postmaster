@@ -6,3 +6,5 @@ dist/
 coverage/
 eval/dataset.jsonl
 *.log
+__pycache__/
+*.pyc

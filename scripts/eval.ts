@@ -1,4 +1,4 @@
-// npm run eval -- [--mock]. Reads eval/dataset.jsonl: {"from","subject","body","label"} per line.
+// npm run eval -- [--mock]. EVAL_DATASET overrides the default eval/dataset.jsonl.
 import { readFileSync } from 'node:fs';
 import { AzureClassifier, MockClassifier } from '../src/classifier.js';
 import { loadConfigFile } from '../src/config.js';
@@ -10,7 +10,9 @@ const config = loadConfigFile(process.env.CONFIG_PATH ?? 'config/categories.yaml
 const classifier = process.argv.includes('--mock')
   ? new MockClassifier()
   : AzureClassifier.fromEnv();
-const lines = readFileSync('eval/dataset.jsonl', 'utf8').split('\n').filter(Boolean);
+const lines = readFileSync(process.env.EVAL_DATASET ?? 'eval/dataset.jsonl', 'utf8')
+  .split('\n')
+  .filter(Boolean);
 
 const rows = [];
 for (const line of lines) {
