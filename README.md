@@ -33,21 +33,29 @@ The hosted service is experimental. Approval, separate Gmail consent, configurat
 
 ## How it works
 
-```text
-Gmail inbox
-  ├─ Matching rule ────────────────────────┐
-  ├─ Eligible sender cache ────────────────┤
-  └─ Azure OpenAI → confidence check ──────┤
-                                           ↓
-                              Gmail labels / actions
-                                           ↓
-                               SQLite + dashboard
+```mermaid
+flowchart TD
+    A([Start]) --> B[Find new inbox messages]
+    B --> C{Matching rule?}
+    C -- Yes --> F[Choose category]
+    C -- No --> D{Eligible sender cache?}
+    D -- Yes --> F
+    D -- No --> E[Classify with Azure OpenAI]
+    E --> G[Validate result and confidence]
+    G --> F
+    F --> H{Dry run?}
+    H -- Yes --> I[Record decision only]
+    H -- No --> J[Apply configured Gmail actions]
+    J --> K[Record decision]
+    I --> L[Review activity in dashboard]
+    K --> L
 ```
 
-1. **Discover:** scan the configured inbox lookback on Start, then use Gmail history to find new messages.
-2. **Classify:** apply the first matching rule, use an eligible sender-cache result, or request a structured model classification.
-3. **Decide:** route low-confidence or invalid responses to the configured fallback; respect category-specific actions and unread-only restrictions.
-4. **Apply and record:** modify Gmail in live mode and store the decision. Dry runs record decisions without changing Gmail.
+1. **Discover:** scan the configured inbox lookback, then use Gmail history to find new messages.
+2. **Classify:** check rules first, then the sender cache. Only messages without a match need the model.
+3. **Decide:** validate the model's category and confidence; use a fallback when the result is uncertain or invalid.
+4. **Act:** dry run records decisions without changing Gmail. In confirmed live mode, apply the category's configured labels and actions.
+5. **Review:** inspect decisions and processing activity in the dashboard while Postmaster continues checking for new mail.
 
 Azure content-filter blocks are filed separately under **AI/Content Filtered** (with your configured label prefix), without archiving or marking the message read. These decisions are treated as processed, not automatically retried. Other Azure errors remain retryable. The ID `content_filtered` and label `Content Filtered` are reserved for this built-in outcome.
 
