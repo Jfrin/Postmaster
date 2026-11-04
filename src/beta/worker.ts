@@ -222,8 +222,9 @@ export class BetaCycleRunner {
         throw error;
       });
       event(stats.stopped ? 'cycle_stopped' : 'cycle_completed', stats);
-      if (scanBacklog && !lost && !stats.failed && !stats.stopped) {
+      if (scanBacklog && !lost && !limitReached && !stats.failed && !stats.stopped) {
         this.access.completeBacklogScan(lease, config.settings.backlog_days, this.now().getTime());
+        event('backlog_completed');
       }
       try {
         this.access.recordCycle(lease, stats, this.now().getTime());

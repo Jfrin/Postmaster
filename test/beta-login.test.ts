@@ -2,7 +2,11 @@ import { request as httpRequest, type IncomingHttpHeaders, type Server } from 'n
 import type { AddressInfo } from 'node:net';
 import { describe, expect, it, vi } from 'vitest';
 import { BetaAccessStore } from '../src/beta/access.js';
-import { IdentityFlow, restrictIdentityProvider } from '../src/beta/identity-flow.js';
+import {
+  IdentityAccessDeniedError,
+  IdentityFlow,
+  restrictIdentityProvider,
+} from '../src/beta/identity-flow.js';
 import { IdentityLoginStateStore } from '../src/beta/oauth-state.js';
 import { createBetaServer } from '../src/beta/server.js';
 import { BetaSessionStore } from '../src/beta/session-store.js';
@@ -43,6 +47,74 @@ async function send(
 }
 
 describe('identity login integration with a simulated Google provider', () => {
+  it('serves public navigation and a sign-in page while keeping admin private', async () => {
+    const access = new BetaAccessStore(':memory:');
+    const states = new IdentityLoginStateStore(':memory:');
+    const sessions = new BetaSessionStore(':memory:');
+    const flow = new IdentityFlow(states, sessions, {
+      authorizationUrl: (state) => `https://accounts.google.com/?state=${state}`,
+      exchange: async () => {
+        throw new IdentityAccessDeniedError('private identity details');
+      },
+    });
+    const server = createBetaServer({
+      store: access,
+      origin,
+      basePath: '/beta',
+      now: () => now,
+      identityFlow: flow,
+      authenticate: async (req) => sessions.authenticate(req.headers.cookie, now),
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const landing = await send(base, '/');
+      expect(landing.status).toBe(200);
+      for (const href of ['/beta/apply', '/beta', '/demo', '/privacy'])
+        expect(landing.body).toContain(`href="${href}"`);
+      expect(landing.body).not.toContain('/beta/admin');
+      const privacy = await send(base, '/privacy');
+      expect(privacy.status).toBe(200);
+      expect(privacy.headers['content-type']).toContain('text/html');
+      expect(privacy.body).toContain('Postmaster privacy policy');
+      expect(privacy.body).toContain('Jose Andres Ofrin');
+      expect(privacy.body).toContain('Azure OpenAI');
+      expect(privacy.body).toContain('does not revoke access at Google');
+      const login = await send(base, '/beta');
+      expect(login.status).toBe(200);
+      expect(login.body).toContain('href="/beta/auth/google/start"');
+      expect(login.body).toContain('href="/privacy"');
+      expect((await send(base, '/beta/apply')).body).toContain('href="/privacy"');
+      expect((await send(base, '/terms')).status).toBe(404);
+      const admin = await send(base, '/beta/admin');
+      expect(admin.status).toBe(401);
+      expect(admin.headers['content-type']).toContain('text/html');
+      expect(admin.body).toContain('href="/beta/"');
+      expect(admin.body).toContain('href="/">Home');
+      expect((await send(base, '/beta/api/admin/applications')).status).toBe(401);
+      const start = await send(base, '/beta/auth/google/start');
+      const state = new URL(start.headers.location!).searchParams.get('state')!;
+      const cookie = start.headers['set-cookie']![0]!.split(';')[0]!;
+      const rejected = await send(
+        base,
+        `/auth/google/callback?state=${state}&code=synthetic`,
+        'GET',
+        { Cookie: cookie },
+      );
+      expect(rejected.status).toBe(401);
+      expect(rejected.body).toContain('not approved for beta access');
+      expect(rejected.body).not.toContain('private identity details');
+      const cancelled = await send(base, '/auth/google/callback?error=access_denied');
+      expect(cancelled.status).toBe(400);
+      expect(cancelled.body).toContain('cancelled');
+      expect(cancelled.headers['set-cookie']?.[0]).toContain('Max-Age=0');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      sessions.close();
+      states.close();
+      access.close();
+    }
+  });
   it('restricts an owner-only test to the verified owner subject', async () => {
     const provider = {
       authorizationUrl: () => 'https://example.com/',
@@ -86,14 +158,16 @@ describe('identity login integration with a simulated Google provider', () => {
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     try {
       const root = await send(base, '/');
-      expect(root.status).toBe(302);
-      expect(root.headers.location).toBe('/auth/google/start');
-      const start = await send(base, root.headers.location!);
+      expect(root.status).toBe(200);
+      expect(root.body).toContain('href="/auth/google/start"');
+      const start = await send(base, '/auth/google/start');
       expect(start.status).toBe(302);
       const state = new URL(start.headers.location!).searchParams.get('state')!;
       const stateCookie = start.headers['set-cookie']![0]!.split(';')[0]!;
       const callback = `/auth/google/callback?state=${state}&code=synthetic-code`;
-      expect((await send(base, callback)).status).toBe(401);
+      const noCookie = await send(base, callback);
+      expect(noCookie.status).toBe(401);
+      expect(noCookie.body).toContain('browser cookie was missing');
       const complete = await send(base, callback, 'GET', { Cookie: stateCookie });
       expect(complete.status).toBe(302);
       expect(complete.headers.location).toBe('/');

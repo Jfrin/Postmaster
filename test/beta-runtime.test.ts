@@ -42,6 +42,79 @@ function options(databasePath: string, vaultKey: Uint8Array): BetaRuntimeOptions
 }
 
 describe('local beta runtime lifecycle', () => {
+  it('admits only approved, authoritative Google identities and revokes existing sessions', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'postmaster-intake-'));
+    const path = join(dir, 'beta.db');
+    const access = new BetaAccessStore(path);
+    access.bootstrapAdmin('owner');
+    const runtime = createBetaRuntime({
+      ...options(path, randomBytes(32)),
+      onlySubject: 'owner',
+      applicationAccess: true,
+      identityProvider: {
+        authorizationUrl: (state) => `https://accounts.google.com/?state=${state}`,
+        exchange: async (code) => ({
+          subject: code === 'imposter' ? 'other-sub' : 'alice-sub',
+          verifiedEmail: code === 'wrong-email' ? 'wrong@gmail.com' : 'alice@gmail.com',
+          emailAuthoritative: code !== 'not-authoritative',
+        }),
+      },
+    });
+    try {
+      await runtime.start();
+      const port = (runtime.server.address() as AddressInfo).port;
+      const send = (path: string, cookie?: string) =>
+        new Promise<{ status: number; location?: string; cookies: string[] }>((resolve, reject) => {
+          const req = request(
+            {
+              host: '127.0.0.1',
+              port,
+              path,
+              headers: { Host: 'beta.example.com', ...(cookie ? { Cookie: cookie } : {}) },
+            },
+            (res) => {
+              res.resume();
+              res.on('end', () =>
+                resolve({
+                  status: res.statusCode ?? 0,
+                  location: res.headers.location,
+                  cookies: res.headers['set-cookie'] ?? [],
+                }),
+              );
+            },
+          );
+          req.on('error', reject);
+          req.end();
+        });
+      const login = async (code: string) => {
+        const start = await send('/auth/google/start');
+        const state = new URL(start.location!).searchParams.get('state');
+        return send(
+          `/auth/google/callback?state=${state}&code=${code}`,
+          start.cookies[0]!.split(';')[0],
+        );
+      };
+      access.submitApplication('alice@gmail.com', now);
+      expect((await login('alice')).status).toBe(401);
+      access.decideApplication('owner', 'alice@gmail.com', 'approved', now + 60_000, 100, now);
+      expect((await login('not-authoritative')).status).toBe(401);
+      expect((await login('wrong-email')).status).toBe(401);
+      const accepted = await login('alice');
+      expect(accepted.status).toBe(302);
+      const cookie = accepted.cookies
+        .find((x) => x.startsWith('__Host-postmaster_session='))!
+        .split(';')[0]!;
+      expect((await send('/api/session', cookie)).status).toBe(200);
+      expect(access.processingRequested('alice-sub')).toBe(false);
+      expect((await login('imposter')).status).toBe(401);
+      access.decideApplication('owner', 'alice@gmail.com', 'denied', null, 100, now);
+      expect((await send('/api/session', cookie)).status).toBe(401);
+    } finally {
+      await runtime.close();
+      access.close();
+      rmSync(dir, { recursive: true });
+    }
+  }, 20_000);
   it('rejects existing sessions for other users in owner-only mode', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'postmaster-owner-only-'));
     const path = join(dir, 'beta.db');

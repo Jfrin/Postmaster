@@ -19,7 +19,9 @@ const Env = z.object({
   BETA_VAULT_SECRET: z.string().min(1),
   BETA_VAULT_VERSION: z.string().min(1),
   BETA_ADMIN_SUBJECT: z.string().min(1).max(255),
+  BETA_ADMIN_EMAIL: z.string().email().max(320),
   BETA_OWNER_ONLY: z.enum(['true', 'false']).default('false'),
+  BETA_APPLICATION_ACCESS: z.enum(['true', 'false']).default('false'),
   BETA_PORT: z.coerce.number().int().min(1).max(65535).default(8081),
   BETA_BIND: z.enum(['127.0.0.1', '0.0.0.0']).default('127.0.0.1'),
 });
@@ -65,16 +67,22 @@ export async function createDeploymentRuntime(
     identityCallback,
   );
   const ownerOnly = options.BETA_OWNER_ONLY === 'true';
+  const applicationAccess = options.BETA_APPLICATION_ACCESS === 'true';
+  if (applicationAccess && !ownerOnly)
+    throw new Error('application access requires owner-only mode');
   const runtime = await createAzureBetaRuntime(
     {
       databasePath: options.BETA_DATABASE_PATH,
       origin: options.BETA_ORIGIN,
       basePath: options.BETA_BASE_PATH,
+      adminIdentity: { subject: options.BETA_ADMIN_SUBJECT, email: options.BETA_ADMIN_EMAIL },
       defaultConfigYaml: defaults,
-      identityProvider: ownerOnly
-        ? restrictIdentityProvider(identityProvider, options.BETA_ADMIN_SUBJECT)
-        : identityProvider,
+      identityProvider:
+        ownerOnly && !applicationAccess
+          ? restrictIdentityProvider(identityProvider, options.BETA_ADMIN_SUBJECT)
+          : identityProvider,
       ...(ownerOnly ? { onlySubject: options.BETA_ADMIN_SUBJECT } : {}),
+      applicationAccess,
       gmailConsentProvider: new GoogleGmailConsentProvider(
         gmail.client_id,
         gmail.client_secret,

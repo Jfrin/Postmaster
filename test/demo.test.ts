@@ -42,6 +42,7 @@ describe('isolated mock demo', () => {
     expect(html).toContain('Start</button>');
     expect(html).toContain('disabled title="Not available in the demo"');
     expect(html).toContain('/oauth2/sign_out');
+    expect(html).toContain('href="/">Home</a>');
     for (const id of ['activity', 'categories', 'rules', 'settings', 'try']) {
       expect(html).toContain(`aria-controls="${id}"`);
       expect(html).toContain(`id="${id}"`);
@@ -49,6 +50,14 @@ describe('isolated mock demo', () => {
     const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new vm.Script(script!)).not.toThrow();
+  });
+
+  it('serves the synthetic demo at its new path', async () => {
+    for (const path of ['/demo', '/demo/']) {
+      const res = await fetch(`${base}${path}`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain('No Gmail connection');
+    }
   });
 
   it('switches demo sections and sends only synthetic try-it input to the classifier', async () => {

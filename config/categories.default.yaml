@@ -7,7 +7,7 @@ settings:
   poll_interval_seconds: 300
   max_body_chars: 1500
   daily_llm_call_cap: 2000
-  backlog_days: 7
+  backlog_days: 365
 rules:
   - match:
       from_domain: github.com

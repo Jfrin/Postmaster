@@ -10,6 +10,8 @@ const now = Date.parse('2026-11-04T10:00:00Z');
 const csrf = 'z'.repeat(64);
 const sessions: Record<string, BetaSession> = {
   admin: { subject: 'admin-sub', verifiedEmail: 'admin@example.com', csrfToken: csrf },
+  wrongEmail: { subject: 'admin-sub', verifiedEmail: 'other@example.com', csrfToken: csrf },
+  wrongSubject: { subject: 'alice-sub', verifiedEmail: 'admin@example.com', csrfToken: csrf },
   alice: { subject: 'alice-sub', verifiedEmail: 'alice@example.com', csrfToken: csrf },
   bob: { subject: 'bob-sub', verifiedEmail: 'bob@example.com', csrfToken: csrf },
 };
@@ -23,6 +25,7 @@ beforeEach(async () => {
   server = createBetaServer({
     store,
     origin,
+    adminIdentity: { subject: 'admin-sub', email: 'admin@example.com' },
     now: () => now,
     authenticate: async (req: IncomingMessage) => {
       const cookie = req.headers.cookie?.replace(/^sid=/, '') ?? '';
@@ -92,13 +95,36 @@ describe('unwired beta request and admin server', () => {
       (await request('/', 'admin', 'GET', undefined, { Host: 'evil.example.com' })).status,
     ).toBe(403);
     const html = await (await request('/', 'alice')).text();
-    expect(html).toContain('Testing access');
+    expect(html).toContain('Account');
+    expect(html).not.toContain('Admin dashboard');
+    expect(html).not.toContain('/api/admin/');
     expect(html).toContain('including in dry run');
     expect(html).toContain('Processing may occur outside the VM');
     expect(html).toContain('Attachments are not sent');
     const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new vm.Script(script!)).not.toThrow();
+  });
+
+  it('restricts the separate admin page and every admin API to the configured verified identity', async () => {
+    const unauthenticated = await request('/admin', null);
+    expect(unauthenticated.status).toBe(401);
+    expect(await unauthenticated.text()).toContain('Sign in with the administrator Google account');
+    for (const who of ['alice', 'bob', 'wrongEmail', 'wrongSubject']) {
+      const forbidden = await request('/admin', who);
+      expect(forbidden.status).toBe(403);
+      expect(await forbidden.text()).toContain('This account does not have administrator access');
+      expect((await request('/api/admin/metrics', who)).status).toBe(403);
+      expect((await request('/api/admin/requests', who)).status).toBe(403);
+      expect((await request('/api/admin/deny', who, 'POST', { subject: 'alice-sub' })).status).toBe(
+        403,
+      );
+    }
+    const page = await request('/admin', 'admin');
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain('Testing access');
+    expect(() => new vm.Script(html.match(/<script>([\s\S]*?)<\/script>/)![1]!)).not.toThrow();
   });
 
   it('allows a user to request access only for their verified session identity', async () => {
@@ -118,6 +144,69 @@ describe('unwired beta request and admin server', () => {
     };
     expect(self.isAdmin).toBe(false);
     expect(self.request.subject).toBe('alice-sub');
+  });
+
+  it('accepts public applications but keeps them unverified and protects decisions', async () => {
+    expect((await request('/apply', null)).status).toBe(200);
+    expect((await request('/api/apply', null, 'POST', { email: 'bad' })).status).toBe(400);
+    expect(
+      (
+        await request(
+          '/api/apply',
+          null,
+          'POST',
+          { email: 'alice@gmail.com' },
+          { Origin: 'https://evil.example.com' },
+        )
+      ).status,
+    ).toBe(403);
+    expect((await request('/api/apply', null, 'POST', { email: 'Alice@gmail.com' })).status).toBe(
+      200,
+    );
+    expect((await request('/api/apply', null, 'POST', { email: 'alice@gmail.com' })).status).toBe(
+      200,
+    );
+    expect((await request('/api/admin/applications', null)).status).toBe(401);
+    expect((await request('/api/admin/applications', 'alice')).status).toBe(403);
+    expect((await request('/api/admin/applications', 'wrongEmail')).status).toBe(403);
+    expect(await (await request('/api/admin/applications', 'admin')).json()).toMatchObject([
+      { email: 'alice@gmail.com', status: 'pending', subject: null, dailyLimit: 100 },
+    ]);
+    const approval = {
+      email: 'alice@gmail.com',
+      status: 'approved',
+      expiresAt: now + 60_000,
+      dailyLimit: 100,
+    };
+    expect(
+      (await request('/api/admin/application-decision', 'alice', 'POST', approval)).status,
+    ).toBe(403);
+    expect(
+      (
+        await request('/api/admin/application-decision', 'admin', 'POST', approval, {
+          'X-CSRF-Token': 'wrong',
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (await request('/api/admin/application-decision', 'admin', 'POST', approval)).status,
+    ).toBe(200);
+    expect(store.ownRequest('alice-sub')).toBeNull();
+    expect(store.claimApplication('alice-sub', 'ALICE@gmail.com', now)).toBe(true);
+    expect(store.isApplicationAdmitted('alice-sub', 'alice@gmail.com', now)).toBe(true);
+    expect(store.claimApplication('other-sub', 'alice@gmail.com', now)).toBe(false);
+    expect(store.isApplicationAdmitted('alice-sub', 'other@gmail.com', now)).toBe(false);
+    expect(
+      (
+        await request('/api/admin/application-decision', 'admin', 'POST', {
+          ...approval,
+          status: 'denied',
+          expiresAt: null,
+        })
+      ).status,
+    ).toBe(200);
+    expect(store.isApplicationAdmitted('alice-sub', 'alice@gmail.com', now)).toBe(false);
+    expect(store.ownRequest('alice-sub')?.status).toBe('denied');
   });
 
   it('requires admin authorization, exact origin, and CSRF tokens for decisions', async () => {

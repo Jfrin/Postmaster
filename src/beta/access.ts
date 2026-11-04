@@ -39,6 +39,15 @@ export interface AccessRequest {
   dailyLimit: number;
 }
 
+export interface BetaApplication {
+  email: string;
+  status: 'pending' | 'approved' | 'denied';
+  requestedAt: number;
+  expiresAt: number | null;
+  dailyLimit: number;
+  subject: string | null;
+}
+
 interface AccountRow {
   subject: string;
   email: string;
@@ -90,6 +99,16 @@ export class BetaAccessStore {
     initConsentFence(this.db);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS beta_admins (subject TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS beta_applications (
+        email TEXT PRIMARY KEY COLLATE NOCASE,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied')),
+        requested_at INTEGER NOT NULL, expires_at INTEGER,
+        daily_limit INTEGER NOT NULL DEFAULT 100 CHECK (daily_limit >= 0),
+        subject TEXT UNIQUE
+      );
+      CREATE TABLE IF NOT EXISTS beta_application_rate (
+        id INTEGER PRIMARY KEY CHECK (id = 1), window_start INTEGER NOT NULL, attempts INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS beta_access_requests (
         subject TEXT PRIMARY KEY, email TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied')),
@@ -180,6 +199,162 @@ export class BetaAccessStore {
       }
       this.db.prepare('INSERT INTO beta_admins (subject) VALUES (?)').run(subject);
     });
+  }
+
+  /** Public email applications are unverified; never treat them as a Google identity. */
+  submitApplication(email: string, now: number): boolean {
+    checkTime(now);
+    return this.transaction(() => {
+      const rate = this.db
+        .prepare('SELECT window_start, attempts FROM beta_application_rate WHERE id = 1')
+        .get() as { window_start: number; attempts: number } | undefined;
+      if (!rate || now >= rate.window_start + 3_600_000) {
+        this.db
+          .prepare(
+            `INSERT INTO beta_application_rate (id, window_start, attempts) VALUES (1, ?, 1)
+          ON CONFLICT(id) DO UPDATE SET window_start = excluded.window_start, attempts = 1`,
+          )
+          .run(now);
+      } else {
+        if (now < rate.window_start || rate.attempts >= 100) return false;
+        this.db
+          .prepare('UPDATE beta_application_rate SET attempts = attempts + 1 WHERE id = 1')
+          .run();
+      }
+      const count = this.db.prepare('SELECT count(*) AS n FROM beta_applications').get() as {
+        n: number;
+      };
+      if (count.n >= 5000) return false;
+      this.db
+        .prepare(
+          `INSERT INTO beta_applications (email, status, requested_at, daily_limit)
+        VALUES (?, 'pending', ?, ?) ON CONFLICT(email) DO NOTHING`,
+        )
+        .run(email.toLowerCase(), now, DEFAULT_DAILY_READ_LIMIT);
+      return true;
+    });
+  }
+
+  listApplications(actor: string): BetaApplication[] {
+    this.requireAdmin(actor);
+    const rows = this.db
+      .prepare('SELECT * FROM beta_applications ORDER BY requested_at DESC')
+      .all() as unknown as {
+      email: string;
+      status: BetaApplication['status'];
+      requested_at: number;
+      expires_at: number | null;
+      daily_limit: number;
+      subject: string | null;
+    }[];
+    return rows.map((row) => ({
+      email: row.email,
+      status: row.status,
+      requestedAt: row.requested_at,
+      expiresAt: row.expires_at,
+      dailyLimit: row.daily_limit,
+      subject: row.subject,
+    }));
+  }
+
+  decideApplication(
+    actor: string,
+    email: string,
+    status: 'approved' | 'denied',
+    expiresAt: number | null,
+    dailyLimit: number,
+    now: number,
+  ): void {
+    checkTime(now);
+    if (status === 'approved') {
+      if (expiresAt === null) throw new Error('approval expiry required');
+      checkTime(expiresAt);
+      if (expiresAt <= now) throw new Error('approval must expire in the future');
+    }
+    if (!Number.isSafeInteger(dailyLimit) || dailyLimit < 0 || dailyLimit > 100_000)
+      throw new Error('invalid daily limit');
+    this.transaction(() => {
+      this.requireAdmin(actor);
+      const app = this.db
+        .prepare('SELECT subject FROM beta_applications WHERE email = ? COLLATE NOCASE')
+        .get(email) as { subject: string | null } | undefined;
+      if (!app) throw new Error('application not found');
+      this.db
+        .prepare(
+          'UPDATE beta_applications SET status = ?, expires_at = ?, daily_limit = ? WHERE email = ? COLLATE NOCASE',
+        )
+        .run(status, status === 'approved' ? expiresAt : null, dailyLimit, email);
+      if (app.subject) {
+        const prior = this.account(app.subject);
+        if (prior) {
+          if (status === 'denied') {
+            this.db
+              .prepare("UPDATE beta_access_requests SET status = 'denied' WHERE subject = ?")
+              .run(app.subject);
+            invalidateConsent(this.db, app.subject);
+            this.stopWithinTransaction(app.subject);
+          } else {
+            this.db
+              .prepare(
+                "UPDATE beta_access_requests SET status = 'approved', expires_at = ?, daily_limit = ? WHERE subject = ?",
+              )
+              .run(expiresAt, dailyLimit, app.subject);
+            if (prior.status !== 'approved' || prior.expires_at === null || prior.expires_at <= now)
+              this.stopWithinTransaction(app.subject);
+          }
+          this.audit(actor, app.subject, status, now, expiresAt, dailyLimit);
+        }
+      }
+    });
+  }
+
+  /** Bind an approved email once, only after Google verifies the signed-in account. */
+  claimApplication(subject: string, verifiedEmail: string, now: number): boolean {
+    checkSubject(subject);
+    checkTime(now);
+    return this.transaction(() => {
+      const app = this.db
+        .prepare('SELECT * FROM beta_applications WHERE email = ? COLLATE NOCASE')
+        .get(verifiedEmail) as
+        | { status: string; subject: string | null; expires_at: number | null; daily_limit: number }
+        | undefined;
+      if (
+        !app ||
+        app.status !== 'approved' ||
+        app.expires_at === null ||
+        app.expires_at <= now ||
+        (app.subject && app.subject !== subject)
+      )
+        return false;
+      const bound = this.db
+        .prepare('SELECT email FROM beta_applications WHERE subject = ?')
+        .get(subject) as { email: string } | undefined;
+      if (bound && bound.email.toLowerCase() !== verifiedEmail.toLowerCase()) return false;
+      if (!app.subject) {
+        this.db
+          .prepare('UPDATE beta_applications SET subject = ? WHERE email = ? COLLATE NOCASE')
+          .run(subject, verifiedEmail);
+        this.db
+          .prepare(
+            `INSERT INTO beta_access_requests (subject, email, status, requested_at, expires_at, daily_limit)
+          VALUES (?, ?, 'approved', ?, ?, ?) ON CONFLICT(subject) DO UPDATE SET email = excluded.email,
+          status = 'approved', expires_at = excluded.expires_at, daily_limit = excluded.daily_limit`,
+          )
+          .run(subject, verifiedEmail, now, app.expires_at, app.daily_limit);
+        this.stopWithinTransaction(subject);
+      }
+      return true;
+    });
+  }
+
+  isApplicationAdmitted(subject: string, verifiedEmail: string, now: number): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM beta_applications WHERE subject = ? AND email = ? COLLATE NOCASE
+      AND status = 'approved' AND expires_at > ?`,
+      )
+      .get(subject, verifiedEmail, now);
+    return !!row && this.isActive(subject, now);
   }
 
   /** Start or renew a request; an already active approval is never shortened by requesting. */

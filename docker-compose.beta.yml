@@ -14,6 +14,7 @@ services:
       BETA_BIND: 0.0.0.0
       BETA_PORT: '8081'
       BETA_OWNER_ONLY: 'true'
+      BETA_ADMIN_EMAIL: '${BETA_ADMIN_EMAIL:?Set BETA_ADMIN_EMAIL to the verified administrator email}'
     volumes:
       - ./secrets/google-sign-in-client-secret.json:/srv/secrets/identity.json:ro
       - ./secrets/google-client-secret-gmail-web.json:/srv/secrets/gmail.json:ro

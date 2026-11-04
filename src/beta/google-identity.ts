@@ -9,6 +9,8 @@ import {
 export interface VerifiedIdentity {
   subject: string;
   verifiedEmail: string;
+  /** Google is authoritative for Gmail and verified Workspace hosted domains. */
+  emailAuthoritative?: boolean;
 }
 
 /** Identity-only client. Gmail consent must use a separate client/project and flow. */
@@ -93,6 +95,14 @@ export class GoogleIdentityProvider {
       console.warn('beta sign-in: identity claims or nonce invalid');
       throw new Error('Google identity verification failed');
     }
-    return { subject: payload.sub, verifiedEmail: payload.email };
+    const domain = payload.email.split('@').pop()?.toLowerCase();
+    return {
+      subject: payload.sub,
+      verifiedEmail: payload.email,
+      emailAuthoritative:
+        domain === 'gmail.com' ||
+        domain === 'googlemail.com' ||
+        (typeof payload.hd === 'string' && payload.hd.toLowerCase() === domain),
+    };
   }
 }

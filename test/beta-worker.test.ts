@@ -9,6 +9,7 @@ import { State } from '../src/state.js';
 import { AccessDeniedError, BetaAccessStore } from '../src/beta/access.js';
 import { guardBetaClock } from '../src/beta/clock.js';
 import { GmailTokenVault } from '../src/beta/token-vault.js';
+import { BetaProcessingEvents } from '../src/beta/processing-events.js';
 import { BetaCycleRunner, type GmailServiceFactory } from '../src/beta/worker.js';
 
 const now = Date.parse('2026-11-04T10:00:00Z');
@@ -178,6 +179,7 @@ describe('fenced beta processing cycle prototype', () => {
     const access = new BetaAccessStore(path);
     const vault = new GmailTokenVault(path, key);
     const mail = fakeService(['one', 'two']);
+    const events = new BetaProcessingEvents(path);
     let clock = now;
     const runner = new BetaCycleRunner({
       databasePath: path,
@@ -195,6 +197,9 @@ describe('fenced beta processing cycle prototype', () => {
       access.startProcessing('alice', now);
       const first = await runner.run('alice');
       expect(first).toMatchObject({ status: 'completed', stats: { processed: 1, stopped: true } });
+      expect(
+        events.recent('alice', now).map((event) => (event as { event: string }).event),
+      ).not.toContain('backlog_completed');
       const state = new State(path, 'alice');
       try {
         expect(state.getCursor()).toBeNull();
@@ -203,6 +208,9 @@ describe('fenced beta processing cycle prototype', () => {
         clock = now + 86_400_000;
         const second = await runner.run('alice');
         expect(second).toMatchObject({ status: 'completed', stats: { processed: 1, failed: 0 } });
+        expect(
+          events.recent('alice', clock).map((event) => (event as { event: string }).event),
+        ).toContain('backlog_completed');
         expect(state.getCursor()).toBe('100');
         expect(state.hasDecision('two')).toBe(true);
       } finally {
@@ -210,6 +218,7 @@ describe('fenced beta processing cycle prototype', () => {
       }
       expect(mail.get).toHaveBeenCalledTimes(2);
     } finally {
+      events.close();
       runner.close();
       vault.close();
       access.close();

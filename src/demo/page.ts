@@ -19,7 +19,7 @@ label{display:block;font-size:12px;color:var(--muted);margin:12px 0 4px}input,te
 h2{font-size:16px;margin:0 0 8px}#result{white-space:pre-wrap;margin:14px 0 0}#result:empty{display:none}[hidden]{display:none!important}
 @media(max-width:600px){header{flex-wrap:wrap;gap:8px}header .grow{flex-basis:30%}main{padding:14px}nav{padding-left:14px}header{padding:12px 14px}}
 </style></head><body>
-<header><h1>Postmaster</h1><span class="badge">DEMO</span><span class="grow"></span><span class="badge status">Synthetic preview</span><button class="btn" disabled title="Not available in the demo">Start</button><button class="btn" disabled title="Not available in the demo">Save</button><a href="/oauth2/sign_out">Sign out</a></header>
+<header><h1>Postmaster</h1><span class="badge">DEMO</span><span class="grow"></span><a href="/">Home</a><span class="badge status">Synthetic preview</span><button class="btn" disabled title="Not available in the demo">Start</button><button class="btn" disabled title="Not available in the demo">Save</button><a href="/oauth2/sign_out">Sign out</a></header>
 <nav aria-label="Demo sections">
 <button type="button" aria-pressed="true" aria-controls="activity">Activity</button><button type="button" aria-pressed="false" aria-controls="categories">Categories</button><button type="button" aria-pressed="false" aria-controls="rules">Rules</button><button type="button" aria-pressed="false" aria-controls="settings">Settings</button><button type="button" aria-pressed="false" aria-controls="try">Try it</button>
 </nav>

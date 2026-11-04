@@ -31,6 +31,7 @@ function fixture(dir: string): NodeJS.ProcessEnv {
     BETA_VAULT_SECRET: 'beta-key',
     BETA_VAULT_VERSION: 'a'.repeat(32),
     BETA_ADMIN_SUBJECT: 'verified-owner-subject',
+    BETA_ADMIN_EMAIL: 'owner@example.com',
     AZURE_OPENAI_ENDPOINT: 'https://example.openai.azure.com',
     AZURE_OPENAI_API_KEY: 'synthetic-key',
     AZURE_OPENAI_DEPLOYMENT: 'test',
@@ -89,6 +90,9 @@ describe('beta deployment wiring', () => {
     const dir = mkdtempSync(join(tmpdir(), 'postmaster-deploy-'));
     const env = fixture(dir);
     try {
+      await expect(
+        createDeploymentRuntime({ ...env, BETA_ADMIN_EMAIL: undefined }, fakeVault()),
+      ).rejects.toThrow();
       await expect(
         createDeploymentRuntime({ ...env, BETA_IDENTITY_CLIENT_PATH: 'missing' }, fakeVault()),
       ).rejects.toThrow('invalid Google web client');

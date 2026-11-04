@@ -91,6 +91,7 @@ describe('identity-only Google login foundation', () => {
     expect(await provider.exchange('code', 'v'.repeat(86), nonce)).toEqual({
       subject: 'google-sub',
       verifiedEmail: 'test@example.com',
+      emailAuthoritative: false,
     });
     expect(client.getToken).toHaveBeenCalledWith({
       code: 'code',
@@ -133,5 +134,25 @@ describe('identity-only Google login foundation', () => {
         'verification failed',
       );
     }
+  });
+
+  it('accepts Gmail and matching hosted domains as authoritative, but not external addresses', async () => {
+    const nonce = 'n'.repeat(43);
+    let payload = { sub: 'user', email: 'test@gmail.com', email_verified: true, nonce, hd: '' };
+    const client = {
+      getToken: vi.fn().mockResolvedValue({ tokens: { id_token: 'fake' } }),
+      verifyIdToken: vi.fn().mockImplementation(async () => ({ getPayload: () => payload })),
+    };
+    const provider = new GoogleIdentityProvider(
+      'client',
+      'secret',
+      callback,
+      client as unknown as OAuth2Client,
+    );
+    expect((await provider.exchange('code', 'v'.repeat(86), nonce)).emailAuthoritative).toBe(true);
+    payload = { ...payload, email: 'test@company.example', hd: 'company.example' };
+    expect((await provider.exchange('code', 'v'.repeat(86), nonce)).emailAuthoritative).toBe(true);
+    payload = { ...payload, hd: 'other.example' };
+    expect((await provider.exchange('code', 'v'.repeat(86), nonce)).emailAuthoritative).toBe(false);
   });
 });

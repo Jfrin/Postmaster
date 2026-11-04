@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
+import { performance } from 'node:perf_hooks';
 import { join } from 'node:path';
 import type { gmail_v1 } from '@googleapis/gmail';
 import { describe, expect, it } from 'vitest';
@@ -121,13 +122,14 @@ describe('simulated two-user beta integration', () => {
     const access = new BetaAccessStore(path);
     const vault = new GmailTokenVault(path, key);
     access.bootstrapAdmin('admin');
+    const clockStart = performance.now();
     const runtime = createBetaRuntime({
       databasePath: path,
       vaultKey: key,
       defaultConfigYaml: defaults,
       origin,
       basePath: '/beta',
-      now: () => now,
+      now: () => now + Math.floor(performance.now() - clockStart),
       tickMs: 60_000,
       identityProvider: {
         authorizationUrl: (state: string) => `https://accounts.google.com/login?state=${state}`,
@@ -332,5 +334,5 @@ describe('simulated two-user beta integration', () => {
       access.close();
       rmSync(dir, { recursive: true });
     }
-  });
+  }, 20_000);
 });

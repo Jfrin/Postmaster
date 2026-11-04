@@ -1,0 +1,15 @@
+/** Public navigation and identity-only sign-in; neither page connects Gmail. */
+export const LANDING_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Postmaster</title><style>body{font:16px/1.6 system-ui,sans-serif;max-width:48rem;margin:10vh auto;padding:1.5rem}nav{display:flex;flex-wrap:wrap;gap:1rem}a{color:inherit}nav a{border:1px solid;padding:.7rem 1rem;border-radius:.5rem}</style></head><body><main><h1>Postmaster</h1><p>Explore the synthetic demo or apply for the closed Gmail beta.</p><nav aria-label="Get started"><a href="/beta/apply">Apply for beta</a><a href="/beta">Sign in to beta</a><a href="/demo">Synthetic demo</a></nav><p>The demo uses synthetic examples. Beta access requires approval and separate Gmail consent.</p><p><a href="/privacy">Privacy policy</a></p></main></body></html>`;
+
+export function signInPage(basePath: string, message?: string): string {
+  // Both the base path and message are server-controlled, not derived from the request.
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in to Postmaster beta</title><style>body{font:16px/1.6 system-ui,sans-serif;max-width:36rem;margin:10vh auto;padding:1.5rem}a{color:inherit}.button{display:inline-block;border:1px solid;padding:.7rem 1rem;border-radius:.5rem}</style></head><body><main><h1>Sign in to the closed beta</h1>${message ? `<p role="alert">${message}</p>` : ''}<p>Use the Google account approved for the beta. Signing in does not connect Gmail or start processing.</p><p><a class="button" href="${basePath}/auth/google/start">Continue with Google</a></p><p><a href="${basePath}/apply">Apply for access</a> · <a href="/">Home</a> · <a href="/privacy">Privacy policy</a></p></main></body></html>`;
+}
+
+/** A navigation page only; authorization is enforced separately on every admin request. */
+export function adminAccessPage(basePath: string, signedIn: boolean): string {
+  const message = signedIn
+    ? 'This account does not have administrator access. To use a different account, open the beta dashboard, sign out, and sign in with the administrator Google account.'
+    : 'Sign in with the administrator Google account to access this page. After signing in, return to this page.';
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Administrator access required</title><style>body{font:16px/1.6 system-ui,sans-serif;max-width:38rem;margin:10vh auto;padding:1.5rem}main{border:1px solid #999;border-radius:.75rem;padding:1.5rem}nav{display:flex;flex-wrap:wrap;gap:.75rem}a{color:inherit}nav a{display:inline-block;border:1px solid;padding:.6rem 1rem;border-radius:.5rem}</style></head><body><main><h1>Administrator access required</h1><p>${message}</p><nav aria-label="Navigation"><a href="${basePath}/">${signedIn ? 'Open beta dashboard' : 'Go to beta sign-in'}</a><a href="/">Home</a></nav></main></body></html>`;
+}

@@ -19,7 +19,7 @@ const SettingsSchema = z
     max_body_chars: z.number().int().positive().default(1500),
     daily_llm_call_cap: z.number().int().nonnegative().default(2000),
     // Gmail's newer_than search breaks on absurd windows, so cap it at 10 years.
-    backlog_days: z.number().int().positive().max(3650).default(7),
+    backlog_days: z.number().int().positive().max(3650).default(365),
   })
   .strict();
 

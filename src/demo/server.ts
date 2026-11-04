@@ -34,7 +34,10 @@ async function handle(
   origin: string,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
-  if (req.method === 'GET' && url.pathname === '/') {
+  if (
+    req.method === 'GET' &&
+    (url.pathname === '/' || url.pathname === '/demo' || url.pathname === '/demo/')
+  ) {
     return respond(res, 200, DEMO_PAGE, 'text/html; charset=utf-8');
   }
   if (req.method !== 'POST' || url.pathname !== '/api/try') {

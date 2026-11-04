@@ -15,6 +15,7 @@ export type ProcessingEvent =
   | 'processing_messages'
   | 'cycle_progress'
   | 'cycle_completed'
+  | 'backlog_completed'
   | 'cycle_stopped'
   | 'cycle_failed_api_disabled'
   | 'cycle_failed_insufficient_permission'
@@ -56,6 +57,7 @@ export class BetaProcessingEvents {
       'processing_messages',
       'cycle_progress',
       'cycle_completed',
+      'backlog_completed',
       'cycle_stopped',
       'cycle_failed_api_disabled',
       'cycle_failed_insufficient_permission',

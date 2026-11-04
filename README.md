@@ -4,9 +4,13 @@
 
 Postmaster classifies incoming email using configurable rules, a learned sender cache, and Azure OpenAI. It applies Gmail labels and optional actions based on the result, with a local dashboard for reviewing decisions and managing the pipeline.
 
-**TypeScript · Node.js · Gmail API · Azure OpenAI · SQLite · Docker**
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-339933?style=flat&logo=nodedotjs&logoColor=white)
+![Gmail API](https://img.shields.io/badge/Gmail_API-EA4335?style=flat&logo=gmail&logoColor=white)
+![Azure OpenAI](https://img.shields.io/badge/Azure_OpenAI-0078D4?style=flat&logo=openai&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat&logo=sqlite&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=white)
 
-See the [project plan](docs/plan.md) for the canonical roadmap and deployment decisions.
 For private VM deployment, backups, and monitoring, see the [Azure operations runbook](docs/azure-operations.md).
 
 ## Highlights

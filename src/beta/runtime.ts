@@ -4,7 +4,7 @@ import { BetaActivityStore } from './activity.js';
 import { guardBetaClock } from './clock.js';
 import { GmailConsentFlow, type GmailConsentProvider } from './gmail-consent-flow.js';
 import { GmailConsentStateStore } from './gmail-consent-state.js';
-import { IdentityFlow, type IdentityProvider } from './identity-flow.js';
+import { IdentityAccessDeniedError, IdentityFlow, type IdentityProvider } from './identity-flow.js';
 import { loadAzureVaultKey } from './key-vault.js';
 import { IdentityLoginStateStore } from './oauth-state.js';
 import { BetaProcessingEvents } from './processing-events.js';
@@ -25,6 +25,9 @@ export interface BetaRuntimeOptions {
   identityProvider: IdentityProvider;
   /** When set, reject any existing session belonging to another Google subject. */
   onlySubject?: string;
+  /** Permit a Google-verified, administrator-approved applicant alongside the owner. */
+  applicationAccess?: boolean;
+  adminIdentity?: { subject: string; email: string };
   gmailConsentProvider: GmailConsentProvider;
   makeGmailService: GmailServiceFactory;
   classifier: Classifier;
@@ -79,7 +82,33 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
     const sessions = own(new BetaSessionStore(options.databasePath));
     const identityStates = own(new IdentityLoginStateStore(options.databasePath));
     const consentStates = own(new GmailConsentStateStore(options.databasePath));
-    const identity = new IdentityFlow(identityStates, sessions, options.identityProvider);
+    if (options.applicationAccess && !options.onlySubject)
+      throw new Error('application access requires an owner subject');
+    const provider = options.applicationAccess
+      ? {
+          authorizationUrl: options.identityProvider.authorizationUrl.bind(
+            options.identityProvider,
+          ),
+          exchange: async (code: string, verifier: string, nonce: string) => {
+            const verified = await options.identityProvider.exchange(code, verifier, nonce);
+            if (
+              verified.subject !== options.onlySubject &&
+              (!verified.emailAuthoritative ||
+                !access.claimApplication(verified.subject, verified.verifiedEmail, now()))
+            ) {
+              if (
+                options.adminIdentity &&
+                verified.verifiedEmail.toLowerCase() === options.adminIdentity.email.toLowerCase()
+              )
+                console.warn('beta sign-in: configured admin email matched but subject did not');
+              console.warn('beta sign-in: verified identity not admitted');
+              throw new IdentityAccessDeniedError('identity is not permitted');
+            }
+            return verified;
+          },
+        }
+      : options.identityProvider;
+    const identity = new IdentityFlow(identityStates, sessions, provider);
     const consent = new GmailConsentFlow(
       consentStates,
       access,
@@ -110,6 +139,7 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
     const server = createBetaServer({
       store: access,
       origin: options.origin,
+      adminIdentity: options.adminIdentity,
       basePath: options.basePath,
       identityFlow: identity,
       gmailConsentFlow: consent,
@@ -119,7 +149,11 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
       processingOnline: () => scheduler.status().online,
       authenticate: async (req) => {
         const session = sessions.authenticate(req.headers.cookie, now());
-        return session && (!options.onlySubject || session.subject === options.onlySubject)
+        return session &&
+          (!options.onlySubject ||
+            session.subject === options.onlySubject ||
+            (options.applicationAccess &&
+              access.isApplicationAdmitted(session.subject, session.verifiedEmail, now())))
           ? session
           : null;
       },

@@ -25,12 +25,15 @@ describe('per-user configuration foundation', () => {
       const alice = config.get('alice', now);
       const bob = config.get('bob', now);
       expect(alice.settings.dry_run).toBe(true);
+      expect(alice.settings.backlog_days).toBe(365);
+      alice.settings.backlog_days = 30;
       alice.settings.label_prefix = 'ALICE/';
       alice.rules = [
         { match: { from_domain: 'synthetic.example' }, category: alice.settings.fallback_category },
       ];
       config.save('alice', alice, now);
       expect(config.get('alice', now).settings.label_prefix).toBe('ALICE/');
+      expect(config.get('alice', now).settings.backlog_days).toBe(30);
       expect(config.get('alice', now).rules).toHaveLength(1);
       expect(config.get('bob', now)).toEqual(bob);
       expect(() => config.get('alice', now + 1000)).toThrow(AccessDeniedError);

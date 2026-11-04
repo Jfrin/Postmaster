@@ -7,6 +7,9 @@ export interface IdentityProvider {
   exchange(code: string, verifier: string, nonce: string): Promise<VerifiedIdentity>;
 }
 
+export class IdentityAccessDeniedError extends Error {}
+export class IdentityStateError extends Error {}
+
 /** Limit a private owner test before expanding access to invited testers. */
 export function restrictIdentityProvider(
   provider: IdentityProvider,
@@ -20,7 +23,7 @@ export function restrictIdentityProvider(
       const identity = await provider.exchange(code, verifier, nonce);
       if (identity.subject !== subject) {
         console.warn('beta sign-in: owner subject mismatch');
-        throw new Error('identity is not permitted');
+        throw new IdentityAccessDeniedError('identity is not permitted');
       }
       return identity;
     },
@@ -53,7 +56,7 @@ export class IdentityFlow {
     const pending = this.states.consume(state, cookieHeader, now);
     if (!pending) {
       console.warn('beta sign-in: state or browser cookie invalid');
-      throw new Error('invalid sign-in response');
+      throw new IdentityStateError('invalid sign-in response');
     }
     let identity: VerifiedIdentity;
     try {

@@ -1,6 +1,7 @@
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { BETA_PAGE } from '../src/beta/page.js';
+import { BETA_ADMIN_PAGE } from '../src/beta/admin-page.js';
 
 class Element {
   nodeType = 1;
@@ -31,12 +32,11 @@ class Element {
 }
 
 describe('beta dashboard', () => {
-  it('renders real scoped events and decisions and navigates the admin dashboard', async () => {
+  it('renders real scoped events and decisions without admin navigation', async () => {
     const elements = Object.fromEntries(
-      ['mode', 'run', 'runbtn', 'dirty', 'save', 'logout', 'tabs', 'main', 'toast'].map((id) => [
-        id,
-        new Element('div'),
-      ]),
+      ['mode', 'run', 'runbtn', 'dirty', 'save', 'logout', 'setup', 'tabs', 'main', 'toast'].map(
+        (id) => [id, new Element('div')],
+      ),
     );
     const session = {
       email: 'alice@example.com',
@@ -58,6 +58,7 @@ describe('beta dashboard', () => {
         { created_at: '2026-11-04T10:00:00Z', subject: '<img>', category: 'work', confidence: 1 },
       ],
       '/beta/api/processing/events': [
+        { occurred_at: 4, event: 'backlog_completed' },
         { occurred_at: 3, event: 'cycle_failed', status: 403 },
         { occurred_at: 2, event: 'cycle_progress', seen: 10, processed: 1 },
         { occurred_at: 1, event: 'cycle_started' },
@@ -93,13 +94,136 @@ describe('beta dashboard', () => {
       elements.main!.text().indexOf('Scan failed'),
     );
     expect(elements.main!.text()).toContain('ERROR');
+    expect(elements.main!.text()).toContain(
+      'Backlog scan complete. Postmaster will keep checking for new email',
+    );
+    expect(BETA_PAGE).toContain('Changes apply on the next scan; no restart is required');
     expect(elements.main!.text()).toContain('<img>');
-    expect(elements.tabs!.text()).toContain('Admin');
-    const admin = elements.tabs!.children.find((child) => child.text() === 'Admin');
-    expect(admin).toBeDefined();
-    admin!.listeners.click!();
+    expect(elements.tabs!.text()).not.toContain('Admin');
+    expect(elements.tabs!.text()).toContain('Account');
+    expect(elements.setup!.hidden).toBe(true);
+    session.gmailReady = false;
+    session.gmailConnected = false;
+    await vm.runInContext('refresh()', context);
+    expect(elements.setup!.hidden).toBe(false);
+    expect(elements.setup!.text()).toContain('Signing in does not connect your inbox');
+    expect(elements.setup!.text()).toContain('Connect Gmail');
+    expect(elements.setup!.text()).toContain('Nothing runs automatically');
+    const goToAccount = elements.setup!.children.find((child) => child.text() === 'Go to Account');
+    expect(goToAccount).toBeDefined();
+    goToAccount!.listeners.click!();
+    expect(elements.main!.text()).toContain('Gmail is not connected');
+    expect(elements.main!.text()).toContain('Connect Gmail');
+    session.gmailConnected = true;
+    await vm.runInContext('refresh()', context);
+    expect(elements.setup!.text()).toContain('saved Gmail connection is not ready');
+    session.gmailReady = true;
+    await vm.runInContext('refresh()', context);
+    expect(elements.setup!.hidden).toBe(true);
+    expect(BETA_PAGE).toContain('href="/">Home</a>');
+    expect(BETA_PAGE).toContain('href="/privacy">Privacy</a>');
+    const account = elements.tabs!.children.find((child) => child.text() === 'Account');
+    expect(account).toBeDefined();
+    account!.listeners.click!();
     await new Promise((resolve) => setImmediate(resolve));
-    expect(elements.main!.text()).toContain('Admin dashboard');
+    expect(elements.main!.text()).toContain('Gmail connection');
     expect(elements.mode!.textContent).toContain('DRY RUN');
+  });
+
+  it('renders requests safely on the separate admin page and sends CSRF-protected decisions', async () => {
+    const elements = Object.fromEntries(
+      [
+        'dashboard',
+        'intake',
+        'summary',
+        'error',
+        'requests',
+        'applications',
+        'application-error',
+      ].map((id) => [id, new Element('div')]),
+    );
+    const calls: {
+      url: string;
+      opts: { method: string; headers: Record<string, string>; body?: string };
+    }[] = [];
+    const replies: Record<string, unknown> = {
+      '/beta/api/session': { isAdmin: true, csrfToken: 'x'.repeat(32) },
+      '/beta/api/admin/metrics': {
+        pending: 1,
+        active: 0,
+        expired: 0,
+        denied: 0,
+        readsToday: 0,
+        processedToday: 0,
+        failedToday: 0,
+      },
+      '/beta/api/admin/requests': [
+        {
+          subject: 'alice',
+          email: '<alice>',
+          status: 'pending',
+          active: false,
+          expiresAt: null,
+          attempts: 0,
+          dailyLimit: 100,
+          cycleUsage: { processed: 0, failed: 0 },
+        },
+      ],
+      '/beta/api/admin/deny': { ok: true },
+      '/beta/api/admin/applications': [
+        { email: 'applicant@gmail.com', status: 'pending', expiresAt: null, dailyLimit: 100 },
+      ],
+      '/beta/api/admin/application-decision': { ok: true },
+    };
+    const document = {
+      querySelector: (selector: string) => elements[selector.slice(1)],
+      createElement: (tag: string) => new Element(tag),
+      createTextNode: (text: string) => Object.assign(new Element('#text'), { textContent: text }),
+    };
+    const script = BETA_ADMIN_PAGE.replace('__BETA_BASE_PATH__', '"/beta"').match(
+      /<script>([\s\S]*?)<\/script>/,
+    )![1]!;
+    vm.runInContext(
+      script,
+      vm.createContext({
+        document,
+        confirm: () => true,
+        fetch: async (
+          url: string,
+          opts: { method: string; headers: Record<string, string>; body?: string },
+        ) => {
+          calls.push({ url, opts });
+          return { ok: true, json: async () => replies[url] };
+        },
+      }),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(elements.requests!.text()).toContain('<alice>');
+    const find = (node: Element, text: string): Element | undefined =>
+      node.tag === 'button' && node.text() === text
+        ? node
+        : node.children.map((x) => find(x, text)).find(Boolean);
+    const deny = find(elements.requests!, 'Deny');
+    expect(deny).toBeDefined();
+    await deny!.listeners.click!();
+    expect(calls.find((c) => c.url.endsWith('/api/admin/deny'))?.opts.headers['X-CSRF-Token']).toBe(
+      'x'.repeat(32),
+    );
+    expect(elements.applications!.text()).toContain('applicant@gmail.com');
+    const inputs = (node: Element): Element[] => [
+      ...(node.tag === 'input' ? [node] : []),
+      ...node.children.flatMap(inputs),
+    ];
+    inputs(elements.applications!)[1]!.value = '2026-12-01T12:00';
+    const approve = find(elements.applications!, 'Approve');
+    expect(approve).toBeDefined();
+    await approve!.listeners.click!();
+    const decision = calls.find((c) => c.url.endsWith('/api/admin/application-decision'));
+    expect(decision?.opts.headers['X-CSRF-Token']).toBe('x'.repeat(32));
+    expect(JSON.parse(decision!.opts.body!)).toMatchObject({
+      email: 'applicant@gmail.com',
+      status: 'approved',
+      dailyLimit: 100,
+    });
   });
 });

@@ -10,9 +10,17 @@ import {
 import type { BetaActivityStore } from './activity.js';
 import type { GmailConsentFlow } from './gmail-consent-flow.js';
 import { GmailConsentStateStore } from './gmail-consent-state.js';
-import type { IdentityFlow } from './identity-flow.js';
+import {
+  IdentityAccessDeniedError,
+  IdentityStateError,
+  type IdentityFlow,
+} from './identity-flow.js';
 import { IdentityLoginStateStore } from './oauth-state.js';
 import { BETA_PAGE } from './page.js';
+import { BETA_ADMIN_PAGE } from './admin-page.js';
+import { BETA_INTAKE_PAGE } from './intake-page.js';
+import { PRIVACY_PAGE } from './privacy-page.js';
+import { adminAccessPage, LANDING_PAGE, signInPage } from './welcome-page.js';
 import type { BetaProcessingEvents } from './processing-events.js';
 import { ConfigLiveConfirmationError, type BetaUserConfigStore } from './user-config.js';
 
@@ -30,6 +38,8 @@ export interface BetaServerOptions {
   basePath?: string;
   /** Must validate an opaque, expiring session cookie; never trust client identity headers. */
   authenticate: (req: IncomingMessage) => Promise<BetaSession | null>;
+  /** Pin administrative access to one verified identity when deployed. */
+  adminIdentity?: { subject: string; email: string };
   /** Optional until Google identity is configured. Gmail consent remains separate. */
   identityFlow?: IdentityFlow;
   /** Only enable after Gmail policy, key management and isolation checks are complete. */
@@ -56,6 +66,15 @@ const Approval = z
   .strict();
 const Denial = z.object({ subject: Subject }).strict();
 const Request = z.object({}).strict();
+const Application = z.object({ email: z.string().trim().email().max(254) }).strict();
+const ApplicationDecision = z
+  .object({
+    email: z.string().email().max(254),
+    status: z.enum(['approved', 'denied']),
+    expiresAt: z.number().int().nonnegative().nullable(),
+    dailyLimit: z.number().int().min(0).max(100_000),
+  })
+  .strict();
 const Start = z.object({ confirmLive: z.boolean().optional() }).strict();
 class RequestTooLargeError extends Error {}
 class SessionExpiredError extends Error {}
@@ -79,12 +98,12 @@ function matchesCsrf(provided: string | string[] | undefined, expected: string):
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+async function readJson(req: IncomingMessage, maxBytes = 131_072): Promise<unknown> {
   let length = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
     length += (chunk as Buffer).length;
-    if (length > 131_072) throw new RequestTooLargeError('request too large');
+    if (length > maxBytes) throw new RequestTooLargeError('request too large');
     chunks.push(chunk as Buffer);
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
@@ -114,6 +133,8 @@ async function handle(
   const url = new URL(req.url ?? '/', options.origin);
   const basePath = options.basePath ?? '';
   let path = url.pathname;
+  if (method === 'GET' && path === '/privacy') return send(res, 200, PRIVACY_PAGE, true);
+  if (basePath && method === 'GET' && path === '/') return send(res, 200, LANDING_PAGE, true);
   if (basePath) {
     if (path === basePath) path = '/';
     else if (path.startsWith(`${basePath}/`)) path = path.slice(basePath.length);
@@ -121,6 +142,23 @@ async function handle(
       return send(res, 404, { error: 'not found' });
   }
   const now = options.now?.() ?? Date.now();
+  if (method === 'GET' && path === '/apply')
+    return send(
+      res,
+      200,
+      BETA_INTAKE_PAGE.replace('__BETA_BASE_PATH__', JSON.stringify(basePath)),
+      true,
+    );
+  if (method === 'POST' && path === '/api/apply') {
+    if (req.headers.origin !== options.origin) return send(res, 403, { error: 'forbidden' });
+    if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? ''))
+      return send(res, 415, { error: 'application/json required' });
+    const input = Application.safeParse(await readJson(req, 2048));
+    if (!input.success) return send(res, 400, { error: 'invalid application' });
+    if (!options.store.submitApplication(input.data.email, now))
+      return send(res, 429, { error: 'try again later' });
+    return send(res, 200, { ok: true });
+  }
   if (method === 'GET' && path === '/auth/google/start' && options.identityFlow) {
     const start = options.identityFlow.start(now);
     res.writeHead(302, {
@@ -134,8 +172,18 @@ async function handle(
   if (method === 'GET' && path === '/auth/google/callback' && options.identityFlow) {
     const states = url.searchParams.getAll('state');
     const codes = url.searchParams.getAll('code');
-    if (states.length !== 1 || codes.length !== 1)
-      return send(res, 400, { error: 'invalid sign-in response' });
+    if (states.length !== 1 || codes.length !== 1) {
+      res.setHeader('Set-Cookie', IdentityLoginStateStore.clearCookie());
+      return send(
+        res,
+        400,
+        signInPage(
+          basePath,
+          'Sign-in was cancelled or the response was invalid. Please try again.',
+        ),
+        true,
+      );
+    }
     try {
       const cookie = await options.identityFlow.finish(
         states[0]!,
@@ -150,9 +198,15 @@ async function handle(
       });
       res.end();
       return;
-    } catch {
+    } catch (error) {
       res.setHeader('Set-Cookie', IdentityLoginStateStore.clearCookie());
-      return send(res, 401, { error: 'sign-in failed' });
+      const message =
+        error instanceof IdentityStateError
+          ? 'Your sign-in attempt expired or the browser cookie was missing. Start again in the same browser.'
+          : error instanceof IdentityAccessDeniedError
+            ? 'This Google account is not approved for beta access. Check the account and application approval.'
+            : 'Sign-in could not be completed. Try again; if it persists, contact the beta administrator.';
+      return send(res, 401, signInPage(basePath, message), true);
     }
   }
   const session = await options.authenticate(req);
@@ -165,13 +219,10 @@ async function handle(
     session.csrfToken.length < 32 ||
     session.csrfToken.length > 256
   ) {
+    if (method === 'GET' && path === '/admin')
+      return send(res, 401, adminAccessPage(basePath, false), true);
     if (method === 'GET' && path === '/' && options.identityFlow) {
-      res.writeHead(302, {
-        Location: `${basePath}/auth/google/start`,
-        'Cache-Control': 'no-store',
-      });
-      res.end();
-      return;
+      return send(res, 200, signInPage(basePath), true);
     }
     return send(res, 401, { error: 'authentication required' });
   }
@@ -211,8 +262,23 @@ async function handle(
     }
   }
   const { store } = options;
+  const isAdmin =
+    store.isAdmin(session.subject) &&
+    (!options.adminIdentity ||
+      (session.subject === options.adminIdentity.subject &&
+        session.verifiedEmail.toLowerCase() === options.adminIdentity.email.toLowerCase()));
   if (method === 'GET' && path === '/')
     return send(res, 200, BETA_PAGE.replace('__BETA_BASE_PATH__', JSON.stringify(basePath)), true);
+  if (method === 'GET' && path === '/admin') {
+    if (!isAdmin) return send(res, 403, adminAccessPage(basePath, true), true);
+    return send(
+      res,
+      200,
+      BETA_ADMIN_PAGE.replace('__BETA_BASE_PATH__', JSON.stringify(basePath)),
+      true,
+    );
+  }
+  if (path.startsWith('/api/admin/') && !isAdmin) return send(res, 403, { error: 'forbidden' });
   if (method === 'POST' && path === '/api/logout' && options.identityFlow) {
     if (!Request.safeParse(await readAuthorizedJson(options, req, session)).success)
       return send(res, 400, { error: 'invalid request' });
@@ -224,7 +290,7 @@ async function handle(
     return send(res, 200, {
       email: session.verifiedEmail,
       csrfToken: session.csrfToken,
-      isAdmin: store.isAdmin(session.subject),
+      isAdmin,
       request: request && { ...request, active: store.isActive(session.subject, now) },
       gmailAvailable: !!options.gmailConsentFlow,
       gmailConnected: options.gmailConsentFlow?.isConnected(session.subject) ?? false,
@@ -313,6 +379,26 @@ async function handle(
       cycleUsage: store.cycleUsage(session.subject, r.subject, now),
     }));
     return send(res, 200, requests);
+  }
+  if (method === 'GET' && path === '/api/admin/applications')
+    return send(res, 200, store.listApplications(session.subject));
+  if (method === 'POST' && path === '/api/admin/application-decision') {
+    const input = ApplicationDecision.safeParse(await readAuthorizedJson(options, req, session));
+    if (
+      !input.success ||
+      (input.data.status === 'approved' &&
+        (input.data.expiresAt === null || input.data.expiresAt <= now))
+    )
+      return send(res, 400, { error: 'invalid decision' });
+    store.decideApplication(
+      session.subject,
+      input.data.email,
+      input.data.status,
+      input.data.expiresAt,
+      input.data.dailyLimit,
+      now,
+    );
+    return send(res, 200, { ok: true });
   }
   if (method === 'GET' && path === '/api/admin/metrics')
     return send(res, 200, store.metrics(session.subject, now));
