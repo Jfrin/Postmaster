@@ -93,6 +93,9 @@ describe('unwired beta request and admin server', () => {
     ).toBe(403);
     const html = await (await request('/', 'alice')).text();
     expect(html).toContain('Testing access');
+    expect(html).toContain('including in dry run');
+    expect(html).toContain('Processing may occur outside the VM');
+    expect(html).toContain('Attachments are not sent');
     const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new vm.Script(script!)).not.toThrow();

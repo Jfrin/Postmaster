@@ -2,7 +2,7 @@
 # Keep this deployment separate from the VM's modified mock-demo Compose file.
 services:
   beta:
-    image: postmaster-beta:local
+    image: '${BETA_IMAGE:?Set BETA_IMAGE to the reviewed beta image}'
     command: ['node', 'dist/beta-main.js']
     env_file: ./secrets/beta.env
     environment:
@@ -13,6 +13,7 @@ services:
       BETA_GMAIL_CLIENT_PATH: /srv/secrets/gmail.json
       BETA_BIND: 0.0.0.0
       BETA_PORT: '8081'
+      BETA_OWNER_ONLY: 'true'
     volumes:
       - ./secrets/google-sign-in-client-secret.json:/srv/secrets/identity.json:ro
       - ./secrets/google-client-secret-gmail-web.json:/srv/secrets/gmail.json:ro

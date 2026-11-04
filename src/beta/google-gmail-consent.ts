@@ -1,5 +1,11 @@
 import { timingSafeEqual } from 'node:crypto';
-import { CodeChallengeMethod, OAuth2Client } from 'google-auth-library';
+import {
+  CodeChallengeMethod,
+  OAuth2Client,
+  type Credentials,
+  type LoginTicket,
+  type TokenInfo,
+} from 'google-auth-library';
 import { SCOPES } from '../gmail.js';
 
 /** Separate OAuth client/project from sign-in; processing must enforce active approval. */
@@ -55,17 +61,31 @@ export class GoogleGmailConsentProvider {
     ) {
       throw new Error('invalid Gmail consent response');
     }
-    const { tokens } = await this.client.getToken({
-      code,
-      codeVerifier: verifier,
-      redirect_uri: this.redirectUri,
-    });
-    if (!tokens.id_token || !tokens.access_token || !tokens.refresh_token)
+    let tokens: Credentials;
+    try {
+      ({ tokens } = await this.client.getToken({
+        code,
+        codeVerifier: verifier,
+        redirect_uri: this.redirectUri,
+      }));
+    } catch (error) {
+      console.warn('beta Gmail consent: Google token exchange failed');
+      throw error;
+    }
+    if (!tokens.id_token || !tokens.access_token || !tokens.refresh_token) {
+      console.warn('beta Gmail consent: required token missing');
       throw new Error('Gmail consent requires a refresh token');
-    const ticket = await this.client.verifyIdToken({
-      idToken: tokens.id_token,
-      audience: this.clientId,
-    });
+    }
+    let ticket: LoginTicket;
+    try {
+      ticket = await this.client.verifyIdToken({
+        idToken: tokens.id_token,
+        audience: this.clientId,
+      });
+    } catch (error) {
+      console.warn('beta Gmail consent: identity token verification failed');
+      throw error;
+    }
     const payload = ticket.getPayload();
     const received =
       typeof payload?.nonce === 'string' ? Buffer.from(payload.nonce) : Buffer.alloc(0);
@@ -76,14 +96,23 @@ export class GoogleGmailConsentProvider {
       received.length !== expected.length ||
       !timingSafeEqual(received, expected)
     ) {
+      if (payload?.sub !== expectedSubject) console.warn('beta Gmail consent: account mismatch');
+      else console.warn('beta Gmail consent: identity claims or nonce invalid');
       throw new Error('Gmail account verification failed');
     }
-    const info = await this.client.getTokenInfo(tokens.access_token);
+    let info: TokenInfo;
+    try {
+      info = await this.client.getTokenInfo(tokens.access_token);
+    } catch (error) {
+      console.warn('beta Gmail consent: permission lookup failed');
+      throw error;
+    }
     if (
       info.aud !== this.clientId ||
       (info.sub && info.sub !== expectedSubject) ||
       !SCOPES.every((scope) => info.scopes.includes(scope))
     ) {
+      console.warn('beta Gmail consent: permission verification failed');
       throw new Error('Gmail permission verification failed');
     }
     return tokens.refresh_token;

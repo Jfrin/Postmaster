@@ -50,18 +50,29 @@ export class GmailConsentFlow {
     cookieHeader: string | undefined,
   ): Promise<void> {
     if (!code || code.length > 4096) throw new Error('invalid Gmail consent response');
-    if (!this.eligible(subject, this.now()))
+    if (!this.eligible(subject, this.now())) {
+      console.warn('beta Gmail consent: access not eligible');
       throw new AccessDeniedError('access not eligible for consent');
+    }
     const pending = this.states.consume(state, cookieHeader, subject, this.now());
-    if (!pending) throw new Error('invalid Gmail consent response');
-    const refreshToken = await this.provider.exchange(
-      code,
-      pending.verifier,
-      pending.nonce,
-      subject,
-    );
+    if (!pending) {
+      console.warn('beta Gmail consent: state or browser cookie invalid');
+      throw new Error('invalid Gmail consent response');
+    }
+    let refreshToken: string;
+    try {
+      refreshToken = await this.provider.exchange(code, pending.verifier, pending.nonce, subject);
+    } catch (error) {
+      console.warn('beta Gmail consent: provider exchange or verification failed');
+      throw error;
+    }
     // Recheck inside the same database transaction as storage, after the network exchange.
-    this.vault.saveIfPendingOrActive(subject, refreshToken, this.now(), pending.generation);
+    try {
+      this.vault.saveIfPendingOrActive(subject, refreshToken, this.now(), pending.generation);
+    } catch (error) {
+      console.warn('beta Gmail consent: token storage failed');
+      throw error;
+    }
   }
 
   /** Caller must authorize the signed-in owner; works even after testing access expires. */

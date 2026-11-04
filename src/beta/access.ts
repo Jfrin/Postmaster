@@ -60,6 +60,10 @@ function checkTime(time: number): void {
   }
 }
 
+function utcDay(time: number): string {
+  return new Date(time).toISOString().slice(0, 10);
+}
+
 function checkLeaseInput(subject: string, owner: string, now: number, ttlMs?: number): void {
   checkSubject(subject);
   checkTime(now);
@@ -333,7 +337,7 @@ export class BetaAccessStore {
   }
 
   private countRead(row: AccountRow, subject: string, now: number): number {
-    const day = new Date(now).toISOString().slice(0, 10);
+    const day = utcDay(now);
     const current = this.db
       .prepare('SELECT attempts FROM beta_read_attempts WHERE subject = ? AND day = ?')
       .get(subject, day) as { attempts: number } | undefined;
@@ -585,14 +589,57 @@ export class BetaAccessStore {
   }
 
   /** The worker must recheck its fence at each Gmail call; already in-flight calls can finish. */
-  authorizeLeasedGmailAttempt(lease: WorkerLease, now: number, kind: GmailRequestKind): void {
-    checkLeaseInput(lease.subject, lease.owner, now);
+  authorizeLeasedGmailAttempt(
+    lease: WorkerLease,
+    now: number | (() => number),
+    kind: GmailRequestKind,
+  ): void {
+    checkLeaseInput(lease.subject, lease.owner, 0);
     if (!Number.isSafeInteger(lease.fence) || lease.fence < 1)
       throw new LeaseLostError('lease lost');
-    this.transaction(() => {
-      const row = this.leasedAccount(lease, now);
-      if (kind === 'message_read') this.countRead(row, lease.subject, now);
+    const checkedAt = this.transaction(() => {
+      // BEGIN IMMEDIATE can wait on another writer; sample only after acquiring the lock.
+      const time = typeof now === 'function' ? now() : now;
+      checkTime(time);
+      const row = this.leasedAccount(lease, time);
+      if (kind === 'message_read') this.countRead(row, lease.subject, time);
+      return time;
     });
+    if (typeof now === 'function') {
+      const afterCommit = now();
+      checkTime(afterCommit);
+      // Recheck time-based expiry after a potentially slow commit. A concurrent Stop after
+      // this check still cannot be made atomic with network dispatch.
+      const account = this.leasedAccount(lease, afterCommit);
+      const worker = this.db
+        .prepare(
+          'SELECT expires_at FROM beta_worker_leases WHERE subject = ? AND owner = ? AND fence = ?',
+        )
+        .get(lease.subject, lease.owner, lease.fence) as { expires_at: number } | undefined;
+      const scheduler = lease.scheduler
+        ? (this.db
+            .prepare(
+              'SELECT expires_at FROM beta_scheduler_lease WHERE id = 1 AND owner = ? AND fence = ?',
+            )
+            .get(lease.scheduler.owner, lease.scheduler.fence) as
+            { expires_at: number } | undefined)
+        : undefined;
+      const finalTime = now();
+      checkTime(finalTime);
+      if (kind === 'message_read' && utcDay(finalTime) !== utcDay(checkedAt)) {
+        throw new Error('UTC day changed during Gmail authorization');
+      }
+      if (account.expires_at === null || account.expires_at <= finalTime) {
+        throw new AccessDeniedError('access not active');
+      }
+      if (
+        !worker ||
+        worker.expires_at <= finalTime ||
+        (lease.scheduler && (!scheduler || scheduler.expires_at <= finalTime))
+      ) {
+        throw new LeaseLostError('lease lost');
+      }
+    }
   }
 
   private leasedAccount(lease: WorkerLease, now: number): AccountRow {

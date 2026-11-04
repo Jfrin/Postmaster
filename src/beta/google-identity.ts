@@ -1,5 +1,10 @@
 import { timingSafeEqual } from 'node:crypto';
-import { CodeChallengeMethod, OAuth2Client } from 'google-auth-library';
+import {
+  CodeChallengeMethod,
+  OAuth2Client,
+  type Credentials,
+  type LoginTicket,
+} from 'google-auth-library';
 
 export interface VerifiedIdentity {
   subject: string;
@@ -51,16 +56,28 @@ export class GoogleIdentityProvider {
       !/^[A-Za-z0-9_-]{43}$/.test(expectedNonce)
     )
       throw new Error('invalid sign-in response');
-    const { tokens } = await this.client.getToken({
-      code,
-      codeVerifier: verifier,
-      redirect_uri: this.redirectUri,
-    });
+    let tokens: Credentials;
+    try {
+      ({ tokens } = await this.client.getToken({
+        code,
+        codeVerifier: verifier,
+        redirect_uri: this.redirectUri,
+      }));
+    } catch (error) {
+      console.warn('beta sign-in: Google token exchange failed');
+      throw error;
+    }
     if (!tokens.id_token) throw new Error('Google identity token missing');
-    const ticket = await this.client.verifyIdToken({
-      idToken: tokens.id_token,
-      audience: this.clientId,
-    });
+    let ticket: LoginTicket;
+    try {
+      ticket = await this.client.verifyIdToken({
+        idToken: tokens.id_token,
+        audience: this.clientId,
+      });
+    } catch (error) {
+      console.warn('beta sign-in: Google identity token verification failed');
+      throw error;
+    }
     const payload = ticket.getPayload();
     const nonce = payload?.nonce;
     const received = typeof nonce === 'string' ? Buffer.from(nonce) : Buffer.alloc(0);
@@ -73,6 +90,7 @@ export class GoogleIdentityProvider {
       received.length !== expected.length ||
       !timingSafeEqual(received, expected)
     ) {
+      console.warn('beta sign-in: identity claims or nonce invalid');
       throw new Error('Google identity verification failed');
     }
     return { subject: payload.sub, verifiedEmail: payload.email };

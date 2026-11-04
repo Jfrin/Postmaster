@@ -11,8 +11,12 @@ export { extractBody } from './gmail-message.js';
 export const SCOPES = ['https://www.googleapis.com/auth/gmail.modify'];
 
 export type GmailRequestKind = 'message_read' | 'other';
-/** Invoked immediately before each Gmail API attempt, after the quota queue admits it. */
+/** Authorizes and, for reads, charges one Gmail API attempt. */
 export type GmailRequestGuard = (kind: GmailRequestKind) => void;
+export type GmailRequestExecutor = <T>(
+  kind: GmailRequestKind,
+  request: () => Promise<T>,
+) => Promise<T>;
 
 export function oauthClientFromSecrets(secretsDir: string): OAuth2Client {
   const creds = JSON.parse(readFileSync(join(secretsDir, 'credentials.json'), 'utf8'));
@@ -38,6 +42,7 @@ export class GmailClient implements MailClient {
   constructor(
     private readonly gmail: gmail_v1.Gmail,
     private readonly guard?: GmailRequestGuard,
+    private readonly execute?: GmailRequestExecutor,
   ) {}
 
   static fromAuth(auth: OAuth2Client, guard?: GmailRequestGuard): GmailClient {
@@ -46,6 +51,7 @@ export class GmailClient implements MailClient {
 
   private request<T>(units: number, kind: GmailRequestKind, request: () => Promise<T>): Promise<T> {
     return this.quota.run(units, () => {
+      if (this.execute) return this.execute(kind, request);
       this.guard?.(kind);
       return request();
     });

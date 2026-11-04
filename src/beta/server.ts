@@ -13,6 +13,7 @@ import { GmailConsentStateStore } from './gmail-consent-state.js';
 import type { IdentityFlow } from './identity-flow.js';
 import { IdentityLoginStateStore } from './oauth-state.js';
 import { BETA_PAGE } from './page.js';
+import type { BetaProcessingEvents } from './processing-events.js';
 import { ConfigLiveConfirmationError, type BetaUserConfigStore } from './user-config.js';
 
 /** A trusted server-side session adapter must supply these from a verified Google identity. */
@@ -35,6 +36,7 @@ export interface BetaServerOptions {
   gmailConsentFlow?: GmailConsentFlow;
   userConfigStore?: BetaUserConfigStore;
   activityStore?: BetaActivityStore;
+  processingEvents?: BetaProcessingEvents;
   /** Must reflect the trusted scheduler's actual online status. */
   processingOnline?: () => boolean;
   now?: () => number;
@@ -258,6 +260,9 @@ async function handle(
   }
   if (method === 'GET' && path === '/api/activity' && options.activityStore) {
     return send(res, 200, options.activityStore.recent(session.subject, now));
+  }
+  if (method === 'GET' && path === '/api/processing/events' && options.processingEvents) {
+    return send(res, 200, options.processingEvents.recent(session.subject, now));
   }
   if (method === 'POST' && path === '/api/processing/start' && options.processingOnline) {
     const input = Start.safeParse(await readAuthorizedJson(options, req, session));

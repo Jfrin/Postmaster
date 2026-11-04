@@ -15,6 +15,25 @@ const now = Date.parse('2026-11-04T10:00:00Z');
 const callback = 'https://beta.example.com/auth/google/gmail/callback';
 
 describe('Gmail connection foundations', () => {
+  it('logs a fixed label without provider error details on token exchange failure', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = { getToken: vi.fn().mockRejectedValue(new Error('sensitive token')) };
+    try {
+      const provider = new GoogleGmailConsentProvider(
+        'gmail-client',
+        'secret',
+        callback,
+        client as unknown as OAuth2Client,
+      );
+      await expect(
+        provider.exchange('code', 'v'.repeat(86), 'n'.repeat(43), 'alice'),
+      ).rejects.toThrow();
+      expect(warn).toHaveBeenCalledWith('beta Gmail consent: Google token exchange failed');
+      expect(warn.mock.calls.flat().join(' ')).not.toContain('sensitive');
+    } finally {
+      warn.mockRestore();
+    }
+  });
   it('binds consent state to the browser and the signed-in subject, expiring and consuming once', () => {
     const states = new GmailConsentStateStore(':memory:');
     try {

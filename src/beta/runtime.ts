@@ -1,14 +1,17 @@
 import type { Classifier } from '../classifier.js';
 import { BetaAccessStore } from './access.js';
 import { BetaActivityStore } from './activity.js';
+import { guardBetaClock } from './clock.js';
 import { GmailConsentFlow, type GmailConsentProvider } from './gmail-consent-flow.js';
 import { GmailConsentStateStore } from './gmail-consent-state.js';
 import { IdentityFlow, type IdentityProvider } from './identity-flow.js';
 import { loadAzureVaultKey } from './key-vault.js';
 import { IdentityLoginStateStore } from './oauth-state.js';
+import { BetaProcessingEvents } from './processing-events.js';
 import { BetaScheduler } from './scheduler.js';
 import { createBetaServer } from './server.js';
 import { BetaSessionStore } from './session-store.js';
+import { deleteStaleGmailTokens } from './token-retention.js';
 import { GmailTokenVault } from './token-vault.js';
 import { BetaUserConfigStore } from './user-config.js';
 import { BetaCycleRunner, type GmailServiceFactory } from './worker.js';
@@ -20,6 +23,8 @@ export interface BetaRuntimeOptions {
   origin: string;
   basePath?: string;
   identityProvider: IdentityProvider;
+  /** When set, reject any existing session belonging to another Google subject. */
+  onlySubject?: string;
   gmailConsentProvider: GmailConsentProvider;
   makeGmailService: GmailServiceFactory;
   classifier: Classifier;
@@ -58,7 +63,7 @@ export async function createAzureBetaRuntime(
 export function createBetaRuntime(options: BetaRuntimeOptions) {
   if (!options.databasePath || options.databasePath === ':memory:')
     throw new Error('shared database file required');
-  const now = options.now ?? Date.now;
+  const now = guardBetaClock(options.now ?? Date.now);
   const closers: (() => void)[] = [];
   const own = <T extends { close(): void }>(resource: T): T => {
     closers.unshift(() => resource.close());
@@ -70,6 +75,7 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
     const vault = own(new GmailTokenVault(options.databasePath, options.vaultKey));
     const config = own(new BetaUserConfigStore(options.databasePath, options.defaultConfigYaml));
     const activity = own(new BetaActivityStore(options.databasePath));
+    const processingEvents = own(new BetaProcessingEvents(options.databasePath));
     const sessions = own(new BetaSessionStore(options.databasePath));
     const identityStates = own(new IdentityLoginStateStore(options.databasePath));
     const consentStates = own(new GmailConsentStateStore(options.databasePath));
@@ -91,7 +97,16 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
         now: () => new Date(now()),
       }),
     );
-    const scheduler = new BetaScheduler(access, runner, now, options.maxConcurrent, options.tickMs);
+    const scheduler = new BetaScheduler(
+      access,
+      runner,
+      now,
+      options.maxConcurrent,
+      options.tickMs,
+      (time) => {
+        deleteStaleGmailTokens(options.databasePath, time);
+      },
+    );
     const server = createBetaServer({
       store: access,
       origin: options.origin,
@@ -100,8 +115,14 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
       gmailConsentFlow: consent,
       userConfigStore: config,
       activityStore: activity,
+      processingEvents,
       processingOnline: () => scheduler.status().online,
-      authenticate: async (req) => sessions.authenticate(req.headers.cookie, now()),
+      authenticate: async (req) => {
+        const session = sessions.authenticate(req.headers.cookie, now());
+        return session && (!options.onlySubject || session.subject === options.onlySubject)
+          ? session
+          : null;
+      },
       now,
     });
     let startup: Promise<void> | null = null;

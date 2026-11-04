@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { MockClassifier } from '../src/classifier.js';
 import { State } from '../src/state.js';
 import { AccessDeniedError, BetaAccessStore } from '../src/beta/access.js';
+import { guardBetaClock } from '../src/beta/clock.js';
 import { GmailTokenVault } from '../src/beta/token-vault.js';
 import { BetaCycleRunner, type GmailServiceFactory } from '../src/beta/worker.js';
 
@@ -43,6 +44,68 @@ function fakeService(ids: string[]) {
 }
 
 describe('fenced beta processing cycle prototype', () => {
+  it('does not issue another Gmail request after observing a clock rollback', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'postmaster-worker-clock-'));
+    const path = join(dir, 'beta.db');
+    const key = randomBytes(32);
+    const access = new BetaAccessStore(path);
+    const vault = new GmailTokenVault(path, key);
+    const mail = fakeService(['one', 'two']);
+    let clock = now;
+    const checked = guardBetaClock(() => clock);
+    let release!: () => void;
+    let started!: () => void;
+    const inFlight = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const resume = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const original = mail.get.getMockImplementation()!;
+    mail.get.mockImplementation(async (arg: { id: string }) => {
+      started();
+      await resume;
+      return original(arg);
+    });
+    const runner = new BetaCycleRunner({
+      databasePath: path,
+      vaultKey: key,
+      defaultConfigYaml: defaults,
+      makeGmailService: () => ({ service: mail.service }),
+      classifier: new MockClassifier(),
+      now: () => new Date(checked()),
+    });
+    try {
+      access.bootstrapAdmin('admin');
+      access.requestAccess('alice', 'alice@example.com', now);
+      access.approve('admin', 'alice', now + 60_000, 100, now);
+      vault.save('alice', 'synthetic-token');
+      const scheduler = access.acquireScheduler('s'.repeat(32), now, 30_000)!;
+      access.startProcessing('alice', now);
+      const cycle = runner.run('alice', scheduler);
+      await inFlight;
+      clock--;
+      expect(checked).toThrow('beta clock is unavailable');
+      release();
+      await expect(cycle).rejects.toThrow('beta clock is unavailable');
+      expect(mail.get).toHaveBeenCalledTimes(1);
+      expect(mail.modify).not.toHaveBeenCalled();
+      const state = new State(path, 'alice');
+      try {
+        expect(state.hasDecision('one')).toBe(false);
+        expect(state.getCursor()).toBeNull();
+      } finally {
+        state.close();
+      }
+    } finally {
+      release();
+      runner.close();
+      vault.close();
+      access.close();
+      rmSync(dir, { recursive: true });
+    }
+  });
+
   it('keeps two users and their Gmail tokens, state, cursors and decisions separate', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'postmaster-worker-'));
     const path = join(dir, 'beta.db');
@@ -53,7 +116,7 @@ describe('fenced beta processing cycle prototype', () => {
     const bobMail = fakeService(['same-id']);
     const factory: GmailServiceFactory = (subject, token) => {
       expect(token).toBe(`synthetic-${subject}-token`);
-      return subject === 'alice' ? aliceMail.service : bobMail.service;
+      return { service: subject === 'alice' ? aliceMail.service : bobMail.service };
     };
     const runner = new BetaCycleRunner({
       databasePath: path,
@@ -120,7 +183,7 @@ describe('fenced beta processing cycle prototype', () => {
       databasePath: path,
       vaultKey: key,
       defaultConfigYaml: defaults,
-      makeGmailService: () => mail.service,
+      makeGmailService: () => ({ service: mail.service }),
       classifier: new MockClassifier(),
       now: () => new Date(clock),
     });
@@ -182,7 +245,7 @@ describe('fenced beta processing cycle prototype', () => {
         databasePath: path,
         vaultKey: key,
         defaultConfigYaml: defaults,
-        makeGmailService: () => mail.service,
+        makeGmailService: () => ({ service: mail.service }),
         classifier: new MockClassifier(),
         now: () => new Date(clock),
       });

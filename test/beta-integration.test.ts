@@ -142,7 +142,7 @@ describe('simulated two-user beta integration', () => {
       makeGmailService: (subject, token) => {
         gmailServices.push(subject);
         expect(token).toBe(`synthetic-${subject}-token`);
-        return fakeGmail(subject, modifications[subject]!);
+        return { service: fakeGmail(subject, modifications[subject]!) };
       },
       classifier: new MockClassifier(),
     });
@@ -201,6 +201,7 @@ describe('simulated two-user beta integration', () => {
         expect(access.ownRequest(subject)?.status).toBe('pending');
         expect(() => vault.loadIfActive(subject, now)).toThrow();
         expect((await send(base, '/api/config', cookies[subject]!)).status).toBe(403);
+        expect((await send(base, '/api/processing/events', cookies[subject]!)).status).toBe(403);
         expect(
           (await send(base, '/api/processing/start', cookies[subject]!, 'POST', {}, csrf[subject]))
             .status,
@@ -245,6 +246,16 @@ describe('simulated two-user beta integration', () => {
       expect(aliceRows[0]!.subject).toContain('alice');
       expect(bobRows).toHaveLength(2);
       expect(bobRows.every((row) => row.subject.includes('bob'))).toBe(true);
+      const aliceEvents = JSON.parse(
+        (await send(base, '/api/processing/events', cookies.alice!)).body,
+      ) as { event: string }[];
+      const bobEvents = JSON.parse(
+        (await send(base, '/api/processing/events?subject=alice', cookies.bob!)).body,
+      ) as { event: string; processed: number | null }[];
+      expect(aliceEvents.some((event) => event.event === 'cycle_started')).toBe(true);
+      expect(
+        bobEvents.some((event) => event.event === 'cycle_completed' && event.processed === 2),
+      ).toBe(true);
       const metrics = JSON.parse((await send(base, '/api/admin/metrics', cookies.admin!)).body) as {
         readsToday: number;
         processedToday: number;
@@ -312,6 +323,7 @@ describe('simulated two-user beta integration', () => {
         ).status,
       ).toBe(200);
       expect((await send(base, '/api/activity', cookies.bob!)).status).toBe(403);
+      expect((await send(base, '/api/processing/events', cookies.bob!)).status).toBe(403);
       expect(access.processingRequested('bob')).toBe(false);
       expect(vault.load('bob')).toBe('synthetic-bob-token');
     } finally {

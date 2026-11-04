@@ -2,7 +2,7 @@ import { request as httpRequest, type IncomingHttpHeaders, type Server } from 'n
 import type { AddressInfo } from 'node:net';
 import { describe, expect, it, vi } from 'vitest';
 import { BetaAccessStore } from '../src/beta/access.js';
-import { IdentityFlow } from '../src/beta/identity-flow.js';
+import { IdentityFlow, restrictIdentityProvider } from '../src/beta/identity-flow.js';
 import { IdentityLoginStateStore } from '../src/beta/oauth-state.js';
 import { createBetaServer } from '../src/beta/server.js';
 import { BetaSessionStore } from '../src/beta/session-store.js';
@@ -43,6 +43,19 @@ async function send(
 }
 
 describe('identity login integration with a simulated Google provider', () => {
+  it('restricts an owner-only test to the verified owner subject', async () => {
+    const provider = {
+      authorizationUrl: () => 'https://example.com/',
+      exchange: async (code: string) => ({ subject: code, verifiedEmail: 'synthetic@example.com' }),
+    };
+    const restricted = restrictIdentityProvider(provider, 'owner');
+    await expect(restricted.exchange('owner', 'verifier', 'nonce')).resolves.toMatchObject({
+      subject: 'owner',
+    });
+    await expect(restricted.exchange('other', 'verifier', 'nonce')).rejects.toThrow(
+      'identity is not permitted',
+    );
+  });
   it('requires browser-bound one-time state, creates a session, and CSRF-protects logout', async () => {
     const access = new BetaAccessStore(':memory:');
     access.bootstrapAdmin('admin-sub');

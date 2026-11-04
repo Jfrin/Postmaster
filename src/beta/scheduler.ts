@@ -23,6 +23,7 @@ export class BetaScheduler {
   private cursor = 0;
   private schedulerError = false;
   private readonly leaseMs = 30_000;
+  private nextMaintenanceAt: number | null = null;
 
   constructor(
     private readonly access: BetaAccessStore,
@@ -30,6 +31,7 @@ export class BetaScheduler {
     private readonly now: () => number = Date.now,
     private readonly maxConcurrent = 1,
     private readonly tickMs = 5000,
+    private readonly maintenance?: (now: number) => void,
   ) {
     if (!Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 8)
       throw new Error('invalid concurrency');
@@ -49,6 +51,7 @@ export class BetaScheduler {
     if (!lease) throw new Error('scheduler lease unavailable');
     this.lease = lease;
     this.next.clear();
+    this.nextMaintenanceAt = null;
     this.schedulerError = false;
     this.active = true;
     this.heartbeat = setInterval(() => {
@@ -102,6 +105,16 @@ export class BetaScheduler {
     if (!this.renew()) return;
     const lease = this.lease!;
     const time = this.now();
+    if (this.maintenance && (this.nextMaintenanceAt === null || time >= this.nextMaintenanceAt)) {
+      try {
+        this.maintenance(time);
+        this.nextMaintenanceAt = time + 60 * 60 * 1000;
+      } catch (error) {
+        // Fail closed for this tick; retry maintenance before launching further work.
+        this.schedulerError = true;
+        throw error;
+      }
+    }
     const users = this.access.runnableUsers(time);
     const present = new Set(users.map((user) => user.subject));
     for (const subject of this.next.keys()) if (!present.has(subject)) this.next.delete(subject);

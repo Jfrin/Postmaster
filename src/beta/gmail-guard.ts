@@ -16,5 +16,5 @@ export function createLeasedBetaGmailGuard(
   lease: WorkerLease,
   now: () => number = Date.now,
 ): GmailRequestGuard {
-  return (kind) => store.authorizeLeasedGmailAttempt(lease, now(), kind);
+  return (kind) => store.authorizeLeasedGmailAttempt(lease, now, kind);
 }

@@ -13,6 +13,8 @@ import {
   type BetaRuntimeOptions,
 } from '../src/beta/runtime.js';
 import { GmailTokenVault } from '../src/beta/token-vault.js';
+import { BetaSessionStore } from '../src/beta/session-store.js';
+import { PENDING_DENIED_TOKEN_RETENTION_MS } from '../src/beta/token-retention.js';
 
 const now = Date.parse('2026-11-04T10:00:00Z');
 
@@ -40,6 +42,89 @@ function options(databasePath: string, vaultKey: Uint8Array): BetaRuntimeOptions
 }
 
 describe('local beta runtime lifecycle', () => {
+  it('rejects existing sessions for other users in owner-only mode', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'postmaster-owner-only-'));
+    const path = join(dir, 'beta.db');
+    const runtime = createBetaRuntime({ ...options(path, randomBytes(32)), onlySubject: 'owner' });
+    const sessions = new BetaSessionStore(path);
+    try {
+      await runtime.start();
+      const port = (runtime.server.address() as AddressInfo).port;
+      const status = (cookie: string) =>
+        new Promise<number>((resolve, reject) => {
+          const req = request(
+            {
+              host: '127.0.0.1',
+              port,
+              path: '/api/session',
+              headers: { Host: 'beta.example.com', Cookie: cookie },
+            },
+            (res) => {
+              res.resume();
+              res.on('end', () => resolve(res.statusCode ?? 0));
+            },
+          );
+          req.on('error', reject);
+          req.end();
+        });
+      const owner = sessions.issue('owner', 'owner@example.com', now, 60_000).split(';')[0]!;
+      const other = sessions.issue('other', 'other@example.com', now, 60_000).split(';')[0]!;
+      expect(await status(owner)).toBe(200);
+      expect(await status(other)).toBe(401);
+    } finally {
+      sessions.close();
+      await runtime.close();
+      rmSync(dir, { recursive: true });
+    }
+  });
+  it('takes the scheduler offline after an observed clock rollback', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'postmaster-runtime-clock-'));
+    let time = now;
+    const runtime = createBetaRuntime({
+      ...options(join(dir, 'beta.db'), randomBytes(32)),
+      now: () => time,
+    });
+    try {
+      await runtime.start();
+      expect(runtime.scheduler.status().online).toBe(true);
+      time--;
+      expect(runtime.scheduler.status().online).toBe(false);
+      time += 10_000;
+      expect(runtime.scheduler.status().online).toBe(false);
+      await expect(runtime.close()).rejects.toThrow('beta clock is unavailable');
+      expect(runtime.server.listening).toBe(false);
+    } finally {
+      await runtime.close().catch(() => {});
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it('runs scheduled token retention without connecting to Gmail', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'postmaster-runtime-retention-'));
+    const path = join(dir, 'beta.db');
+    const key = randomBytes(32);
+    const access = new BetaAccessStore(path);
+    const vault = new GmailTokenVault(path, key);
+    let clock = now + PENDING_DENIED_TOKEN_RETENTION_MS;
+    const runtime = createBetaRuntime({ ...options(path, key), now: () => clock });
+    try {
+      access.requestAccess('alice', 'alice@example.com', now);
+      vault.save('alice', 'synthetic', now);
+      await runtime.start();
+      expect(vault.has('alice')).toBe(true);
+      await runtime.scheduler.tick();
+      expect(vault.has('alice')).toBe(false);
+      clock += 1000;
+      await runtime.scheduler.tick();
+      expect(runtime.scheduler.status().online).toBe(true);
+    } finally {
+      await runtime.close();
+      vault.close();
+      access.close();
+      rmSync(dir, { recursive: true });
+    }
+  });
+
   it('creates the runtime with a managed vault key', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'postmaster-runtime-azure-'));
     const key = randomBytes(32);

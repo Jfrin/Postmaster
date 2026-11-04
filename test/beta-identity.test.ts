@@ -8,6 +8,23 @@ const now = Date.parse('2026-11-04T10:00:00Z');
 const callback = 'https://beta.example.com/auth/google/callback';
 
 describe('identity-only Google login foundation', () => {
+  it('logs only a fixed label when Google token exchange fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = { getToken: vi.fn().mockRejectedValue(new Error('sensitive details')) };
+    try {
+      const provider = new GoogleIdentityProvider(
+        'client',
+        'secret',
+        callback,
+        client as unknown as OAuth2Client,
+      );
+      await expect(provider.exchange('code', 'v'.repeat(86), 'n'.repeat(43))).rejects.toThrow();
+      expect(warn).toHaveBeenCalledWith('beta sign-in: Google token exchange failed');
+      expect(warn.mock.calls.flat().join(' ')).not.toContain('sensitive');
+    } finally {
+      warn.mockRestore();
+    }
+  });
   it('binds the browser to single-use state, nonce and PKCE', () => {
     const store = new IdentityLoginStateStore(':memory:');
     try {

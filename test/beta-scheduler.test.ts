@@ -11,6 +11,48 @@ const now = Date.parse('2026-11-04T10:00:00Z');
 const stats = { seen: 1, processed: 1, failed: 0 };
 
 describe('single-instance beta scheduler prototype', () => {
+  it('runs maintenance on the leader and blocks new work until failed maintenance succeeds', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'postmaster-scheduler-maintenance-'));
+    const path = join(dir, 'beta.db');
+    const access = new BetaAccessStore(path);
+    const vault = new GmailTokenVault(path, randomBytes(32));
+    let clock = now;
+    const runner = { run: vi.fn().mockResolvedValue({ status: 'busy' }) };
+    const maintenance = vi.fn().mockImplementationOnce(() => {
+      throw new Error('synthetic maintenance failure');
+    });
+    const scheduler = new BetaScheduler(access, runner, () => clock, 1, 60_000, maintenance);
+    try {
+      access.bootstrapAdmin('admin');
+      access.requestAccess('alice', 'alice@example.com', now);
+      access.approve('admin', 'alice', now + 8_000_000, 100, now);
+      vault.save('alice', 'synthetic');
+      scheduler.start();
+      access.startProcessing('alice', now);
+      await expect(scheduler.tick()).rejects.toThrow('synthetic maintenance failure');
+      expect(scheduler.status().schedulerError).toBe(true);
+      expect(runner.run).not.toHaveBeenCalled();
+      await scheduler.tick();
+      expect(maintenance).toHaveBeenCalledTimes(2);
+      expect(runner.run).toHaveBeenCalledTimes(1);
+      expect(scheduler.status().schedulerError).toBe(false);
+      clock += 10_000;
+      await scheduler.tick();
+      expect(maintenance).toHaveBeenCalledTimes(2);
+      for (let n = 0; n < 180; n++) {
+        clock += 20_000;
+        await scheduler.tick();
+      }
+      expect(scheduler.status().online).toBe(true);
+      expect(maintenance).toHaveBeenCalledTimes(3);
+    } finally {
+      await scheduler.stop();
+      vault.close();
+      access.close();
+      rmSync(dir, { recursive: true });
+    }
+  });
+
   it('renews while a cycle is in flight and goes offline when renewal fails', async () => {
     vi.useFakeTimers();
     const dir = mkdtempSync(join(tmpdir(), 'postmaster-scheduler-heartbeat-'));

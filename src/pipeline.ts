@@ -12,6 +12,7 @@ export interface CycleHooks {
   /** Stops scheduling messages; already in-flight cached writes finish before returning. */
   shouldStop?: () => boolean;
   onProgress?: (done: number, total: number) => void;
+  onStage?: (stage: 'checking_labels' | 'listing_inbox' | 'processing_messages') => void;
 }
 
 export interface CycleStats {
@@ -100,6 +101,7 @@ export async function runCycle(base: BaseContext): Promise<CycleStats> {
   // Done every cycle so flipping dry_run to false needs no restart.
   const names = new Map(config.categories.map((c) => [labelName(config, c.id), c.id]));
   names.set(labelName(config, CONTENT_FILTERED_CATEGORY), CONTENT_FILTERED_CATEGORY);
+  base.hooks?.onStage?.('checking_labels');
   const found = await mail.ensureLabels([...names.keys()], !config.settings.dry_run);
   const labelIds = new Map<string, string>();
   for (const [name, id] of found) {
@@ -108,12 +110,14 @@ export async function runCycle(base: BaseContext): Promise<CycleStats> {
   }
   const ctx: PipelineContext = { ...base, labelIds };
 
+  base.hooks?.onStage?.('listing_inbox');
   const listed = await mail.listNew(
     base.scanBacklog ? null : state.getCursor(),
     config.settings.backlog_days,
   );
   const ids = [...new Set(listed.ids)];
   const cursor = listed.cursor;
+  base.hooks?.onStage?.('processing_messages');
   let processed = 0;
   let failed = 0;
   let stopped = false;

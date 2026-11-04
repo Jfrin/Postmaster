@@ -49,6 +49,14 @@ export class GmailTokenVault {
       if (!columns.some((column) => column.name === 'enabled')) {
         this.db.exec('ALTER TABLE beta_gmail_tokens ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1');
       }
+      if (!columns.some((column) => column.name === 'saved_at')) {
+        this.db.exec('ALTER TABLE beta_gmail_tokens ADD COLUMN saved_at INTEGER');
+        // Give older pending tokens a full retention window from migration, not from an
+        // earlier request date that may predate their actual consent.
+        this.db
+          .prepare('UPDATE beta_gmail_tokens SET saved_at = ? WHERE saved_at IS NULL')
+          .run(Date.now());
+      }
       this.db.exec('COMMIT');
     } catch (error) {
       if (inTransaction) this.db.exec('ROLLBACK');
@@ -63,10 +71,13 @@ export class GmailTokenVault {
     this.key.fill(0);
   }
 
-  save(subject: string, refreshToken: string): void {
+  save(subject: string, refreshToken: string, savedAt = Date.now()): void {
     const aad = associatedData(subject);
     if (!refreshToken || Buffer.byteLength(refreshToken) > 16_384) {
       throw new Error('invalid refresh token');
+    }
+    if (!Number.isSafeInteger(savedAt) || savedAt < 0 || savedAt > 253_402_300_799_999) {
+      throw new Error('invalid timestamp');
     }
     const nonce = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', this.key, nonce);
@@ -75,11 +86,12 @@ export class GmailTokenVault {
     const tag = cipher.getAuthTag();
     this.db
       .prepare(
-        `INSERT INTO beta_gmail_tokens (subject, version, nonce, ciphertext, tag, enabled)
-      VALUES (?, 1, ?, ?, ?, 1) ON CONFLICT(subject) DO UPDATE SET version = excluded.version,
-      nonce = excluded.nonce, ciphertext = excluded.ciphertext, tag = excluded.tag, enabled = 1`,
+        `INSERT INTO beta_gmail_tokens (subject, version, nonce, ciphertext, tag, enabled, saved_at)
+      VALUES (?, 1, ?, ?, ?, 1, ?) ON CONFLICT(subject) DO UPDATE SET version = excluded.version,
+      nonce = excluded.nonce, ciphertext = excluded.ciphertext, tag = excluded.tag, enabled = 1,
+      saved_at = excluded.saved_at`,
       )
-      .run(subject, nonce, ciphertext, tag);
+      .run(subject, nonce, ciphertext, tag, savedAt);
   }
 
   /** Access and token tables must share this SQLite database for atomic authorization. */
@@ -108,7 +120,7 @@ export class GmailTokenVault {
 
   /** Only use after verified Gmail consent; never trust a subject supplied by the browser. */
   saveIfActive(subject: string, refreshToken: string, now: number): void {
-    this.withActiveAccess(subject, now, () => this.save(subject, refreshToken));
+    this.withActiveAccess(subject, now, () => this.save(subject, refreshToken, now));
   }
 
   /** Pending users may store consent, but workers can still load only with active approval. */
@@ -142,7 +154,7 @@ export class GmailTokenVault {
       )
         throw new AccessDeniedError('stale Gmail consent');
       this.stopProcessingWithinTransaction(subject);
-      this.save(subject, refreshToken);
+      this.save(subject, refreshToken, now);
       // A new pending grant replaces the old expired grant. Its former approval expiry
       // must not cause retention cleanup to delete this newly connected token.
       this.db

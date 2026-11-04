@@ -1,8 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { gmail as gmailApi, type gmail_v1 } from '@googleapis/gmail';
-import { OAuth2Client } from 'google-auth-library';
 import type { Classifier } from '../classifier.js';
-import { GmailClient } from '../gmail.js';
+import { GmailClient, type GmailRequestExecutor, type GmailRequestGuard } from '../gmail.js';
 import { silentLogger } from '../logger.js';
 import { runCycle, type CycleStats } from '../pipeline.js';
 import { State } from '../state.js';
@@ -14,11 +13,17 @@ import {
   type SchedulerLease,
 } from './access.js';
 import { createLeasedBetaGmailGuard } from './gmail-guard.js';
+import { BetaGmailOAuthClient } from './gmail-oauth-client.js';
+import { BetaProcessingEvents, safeHttpStatus, type ProcessingEvent } from './processing-events.js';
 import { createBetaStateWriteGuard } from './state-guard.js';
 import { GmailTokenVault } from './token-vault.js';
 import { BetaUserConfigStore } from './user-config.js';
 
-export type GmailServiceFactory = (subject: string, refreshToken: string) => gmail_v1.Gmail;
+export type GmailServiceFactory = (
+  subject: string,
+  refreshToken: string,
+  guard: GmailRequestGuard,
+) => { service: gmail_v1.Gmail; execute?: GmailRequestExecutor };
 
 /** The factory is trusted application code; browser-supplied credentials must never be used. */
 export function googleGmailServiceFactory(
@@ -26,10 +31,13 @@ export function googleGmailServiceFactory(
   clientSecret: string,
 ): GmailServiceFactory {
   if (!clientId || !clientSecret) throw new Error('Gmail OAuth client credentials required');
-  return (_subject, refreshToken) => {
-    const auth = new OAuth2Client({ clientId, clientSecret });
+  return (_subject, refreshToken, guard) => {
+    const auth = new BetaGmailOAuthClient({ clientId, clientSecret });
     auth.setCredentials({ refresh_token: refreshToken });
-    return gmailApi({ version: 'v1', auth });
+    return {
+      service: gmailApi({ version: 'v1', auth }),
+      execute: (kind, request) => auth.execute(kind, guard, request),
+    };
   };
 }
 
@@ -53,6 +61,7 @@ export class BetaCycleRunner {
   private readonly access: BetaAccessStore;
   private readonly vault: GmailTokenVault;
   private readonly configs: BetaUserConfigStore;
+  private readonly events: BetaProcessingEvents;
   private readonly now: () => Date;
   private readonly leaseMs: number;
   private running = 0;
@@ -79,11 +88,20 @@ export class BetaCycleRunner {
       this.access.close();
       throw error;
     }
+    try {
+      this.events = new BetaProcessingEvents(options.databasePath);
+    } catch (error) {
+      this.configs.close();
+      this.vault.close();
+      this.access.close();
+      throw error;
+    }
   }
 
   close(): void {
     if (this.running) throw new Error('worker cycles still running');
     if (this.closed) return;
+    this.events.close();
     this.configs.close();
     this.vault.close();
     this.access.close();
@@ -108,6 +126,17 @@ export class BetaCycleRunner {
     );
     if (!lease) return { status: 'busy' };
     this.running++;
+    const event = (
+      kind: ProcessingEvent,
+      details?: { status?: number; seen?: number; processed?: number; failed?: number },
+    ) => {
+      try {
+        this.events.append(subject, this.now().getTime(), kind, details);
+      } catch {
+        // Observability must not disable the worker's authorization or processing fences.
+      }
+    };
+    event('cycle_started');
     let state: State | undefined;
     let lost = false;
     let limitReached = false;
@@ -137,7 +166,8 @@ export class BetaCycleRunner {
           throw error;
         }
       };
-      const mail = new GmailClient(this.options.makeGmailService(subject, refreshToken), guard);
+      const gmail = this.options.makeGmailService(subject, refreshToken, guard);
+      const mail = new GmailClient(gmail.service, guard, gmail.execute);
       state = new State(
         this.options.databasePath,
         subject,
@@ -157,6 +187,7 @@ export class BetaCycleRunner {
         log: silentLogger,
         now: this.now,
         hooks: {
+          onStage: (stage) => event(stage),
           shouldStop: () => {
             if (lost || limitReached) return true;
             try {
@@ -181,6 +212,7 @@ export class BetaCycleRunner {
         }
         throw error;
       });
+      event(stats.stopped ? 'cycle_stopped' : 'cycle_completed', stats);
       if (scanBacklog && !lost && !stats.failed && !stats.stopped) {
         this.access.completeBacklogScan(lease, config.settings.backlog_days, this.now().getTime());
       }
@@ -196,6 +228,9 @@ export class BetaCycleRunner {
         pollIntervalSeconds: config.settings.poll_interval_seconds,
         limitReached,
       };
+    } catch (error) {
+      event('cycle_failed', { status: safeHttpStatus(error) });
+      throw error;
     } finally {
       clearInterval(timer);
       try {

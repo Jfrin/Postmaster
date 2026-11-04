@@ -4,6 +4,7 @@ import { AzureClassifier } from '../classifier.js';
 import { BetaAccessStore } from './access.js';
 import { GoogleGmailConsentProvider } from './google-gmail-consent.js';
 import { GoogleIdentityProvider } from './google-identity.js';
+import { restrictIdentityProvider } from './identity-flow.js';
 import { createAzureBetaRuntime } from './runtime.js';
 import { googleGmailServiceFactory } from './worker.js';
 
@@ -18,6 +19,7 @@ const Env = z.object({
   BETA_VAULT_SECRET: z.string().min(1),
   BETA_VAULT_VERSION: z.string().min(1),
   BETA_ADMIN_SUBJECT: z.string().min(1).max(255),
+  BETA_OWNER_ONLY: z.enum(['true', 'false']).default('false'),
   BETA_PORT: z.coerce.number().int().min(1).max(65535).default(8081),
   BETA_BIND: z.enum(['127.0.0.1', '0.0.0.0']).default('127.0.0.1'),
 });
@@ -57,17 +59,22 @@ export async function createDeploymentRuntime(
   if (identity.client_id === gmail.client_id || identity.project_id === gmail.project_id)
     throw new Error('separate Google identity and Gmail projects required');
   const defaults = readFileSync(options.BETA_DEFAULT_CONFIG_PATH, 'utf8');
+  const identityProvider = new GoogleIdentityProvider(
+    identity.client_id,
+    identity.client_secret,
+    identityCallback,
+  );
+  const ownerOnly = options.BETA_OWNER_ONLY === 'true';
   const runtime = await createAzureBetaRuntime(
     {
       databasePath: options.BETA_DATABASE_PATH,
       origin: options.BETA_ORIGIN,
       basePath: options.BETA_BASE_PATH,
       defaultConfigYaml: defaults,
-      identityProvider: new GoogleIdentityProvider(
-        identity.client_id,
-        identity.client_secret,
-        identityCallback,
-      ),
+      identityProvider: ownerOnly
+        ? restrictIdentityProvider(identityProvider, options.BETA_ADMIN_SUBJECT)
+        : identityProvider,
+      ...(ownerOnly ? { onlySubject: options.BETA_ADMIN_SUBJECT } : {}),
       gmailConsentProvider: new GoogleGmailConsentProvider(
         gmail.client_id,
         gmail.client_secret,
