@@ -8,7 +8,7 @@ export interface GmailConsentProvider {
   revoke(refreshToken: string): Promise<void>;
 }
 
-/** Separate from sign-in. Only verified, approved users may initiate or complete consent. */
+/** Separate from sign-in; pending or actively approved users may grant consent. */
 export class GmailConsentFlow {
   constructor(
     private readonly states: GmailConsentStateStore,
@@ -20,7 +20,8 @@ export class GmailConsentFlow {
 
   start(subject: string): { location: string; cookie: string } {
     const now = this.now();
-    if (!this.access.isActive(subject, now)) throw new AccessDeniedError('access not active');
+    if (!this.eligible(subject, now))
+      throw new AccessDeniedError('access not eligible for consent');
     const start = this.states.start(subject, now);
     return {
       location: this.provider.authorizationUrl(start.state, start.nonce, start.challenge),
@@ -36,6 +37,12 @@ export class GmailConsentFlow {
     return this.vault.isEnabled(subject);
   }
 
+  private eligible(subject: string, now: number): boolean {
+    return (
+      this.access.ownRequest(subject)?.status === 'pending' || this.access.isActive(subject, now)
+    );
+  }
+
   async finish(
     subject: string,
     state: string,
@@ -43,8 +50,8 @@ export class GmailConsentFlow {
     cookieHeader: string | undefined,
   ): Promise<void> {
     if (!code || code.length > 4096) throw new Error('invalid Gmail consent response');
-    if (!this.access.isActive(subject, this.now()))
-      throw new AccessDeniedError('access not active');
+    if (!this.eligible(subject, this.now()))
+      throw new AccessDeniedError('access not eligible for consent');
     const pending = this.states.consume(state, cookieHeader, subject, this.now());
     if (!pending) throw new Error('invalid Gmail consent response');
     const refreshToken = await this.provider.exchange(
@@ -54,7 +61,7 @@ export class GmailConsentFlow {
       subject,
     );
     // Recheck inside the same database transaction as storage, after the network exchange.
-    this.vault.saveIfActive(subject, refreshToken, this.now());
+    this.vault.saveIfPendingOrActive(subject, refreshToken, this.now());
   }
 
   /** Caller must authorize the signed-in owner; works even after testing access expires. */

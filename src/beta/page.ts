@@ -6,7 +6,7 @@ body{font:16px/1.5 system-ui,sans-serif;color:#182230;background:#f5f7fa;margin:
 main{max-width:1000px;margin:2rem auto;padding:0 1rem}section{background:white;border:1px solid #d9e0e8;border-radius:12px;padding:1rem;margin:1rem 0}
 button,input{font:inherit;padding:.5rem;margin:.25rem}button{cursor:pointer}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #ddd;text-align:left;padding:.5rem}small{color:#475467}
 </style></head><body><main><h1>Postmaster beta</h1><p id="identity"></p><section><h2>Testing access</h2>
-<p id="access"></p><button id="request">Request access</button><p><small>Gmail is connected separately after approval.</small></p>
+<p id="access"></p><button id="request">Request access</button><p><small>Connect Gmail before approval. No mailbox processing occurs until approval and Start.</small></p>
 <div id="gmail" hidden><p id="gmail-status"></p><p><small>Connecting grants Gmail modification access. When processing is enabled, message metadata and a limited body may be sent to Azure OpenAI. Only connect an inbox after reviewing the privacy and consent information.</small></p><button id="connect">Connect Gmail</button><button id="disconnect">Disconnect Gmail</button><button id="forget">Remove local connection</button></div></section>
 <section id="config" hidden><h2>Categories, rules, and settings</h2><p><small>Edit your own JSON configuration. New accounts start in dry run; live actions can change your Gmail.</small></p><textarea id="config-text" rows="18" style="width:100%;box-sizing:border-box"></textarea><button id="save-config">Save configuration</button></section>
 <section id="processing" hidden><h2>Processing</h2><p id="processing-status"></p><button id="processing-button"></button></section>
@@ -14,19 +14,20 @@ button,input{font:inherit;padding:.5rem;margin:.25rem}button{cursor:pointer}tabl
 <section id="admin" hidden><h2>Admin dashboard</h2><p id="metrics"></p><div id="requests"></div></section>
 <p id="message" role="status"></p><button id="logout">Sign out</button></main><script>
 let session;
+const basePath=__BETA_BASE_PATH__;
 const byId=id=>document.getElementById(id);
 function element(tag,text){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e}
 async function api(path,method='GET',body,extra={}){
   const options={method,headers:{}};
   if(method!=='GET'){options.headers={'Content-Type':'application/json','X-CSRF-Token':session.csrfToken,...extra};options.body=JSON.stringify(body)}
-  const response=await fetch(path,options);const value=await response.json();if(!response.ok)throw new Error(value.error||'Request failed');return value;
+  const response=await fetch(basePath+path,options);const value=await response.json();if(!response.ok)throw new Error(value.error||'Request failed');return value;
 }
 async function refresh(){
   session=await api('/api/session');byId('identity').textContent='Signed in as '+session.email;
   const request=session.request;byId('access').textContent=!request?'No request submitted.':request.active?'Approved until '+new Date(request.expiresAt).toLocaleString():request.status==='approved'?'Approval expired.':request.status==='pending'?'Your request is pending.':'Your request was denied.';
   byId('request').disabled=!!request&&(request.active||request.status==='pending');
   byId('gmail').hidden=!session.gmailAvailable;
-  byId('connect').hidden=!(request&&request.active);
+  byId('connect').hidden=!!request&&!request.active&&request.status!=='pending';
   byId('disconnect').hidden=!session.gmailConnected;
   byId('forget').hidden=!session.gmailConnected;
   byId('gmail-status').textContent=session.gmailConnected?'Gmail connection stored.':'Gmail is not connected.';

@@ -38,9 +38,74 @@ describe('isolated mock demo', () => {
   it('serves a synthetic-only page with valid script', async () => {
     const html = await (await fetch(base)).text();
     expect(html).toContain('No Gmail connection');
+    expect(html).toContain('Activity and settings below are examples');
+    expect(html).toContain('Start</button>');
+    expect(html).toContain('disabled title="Not available in the demo"');
+    expect(html).toContain('/oauth2/sign_out');
+    for (const id of ['activity', 'categories', 'rules', 'settings', 'try']) {
+      expect(html).toContain(`aria-controls="${id}"`);
+      expect(html).toContain(`id="${id}"`);
+    }
     const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new vm.Script(script!)).not.toThrow();
+  });
+
+  it('switches demo sections and sends only synthetic try-it input to the classifier', async () => {
+    const html = await (await fetch(base)).text();
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)![1]!;
+    const ids = ['activity', 'categories', 'rules', 'settings', 'try'];
+    const panels = Object.fromEntries(ids.map((id, index) => [id, { hidden: index !== 0 }]));
+    const tabs = ids.map((id) => ({
+      attrs: { 'aria-controls': id, 'aria-pressed': id === 'activity' ? 'true' : 'false' },
+      click: () => {},
+      addEventListener(_event: string, fn: () => void) {
+        this.click = fn;
+      },
+      getAttribute(key: 'aria-controls' | 'aria-pressed') {
+        return this.attrs[key];
+      },
+      setAttribute(key: 'aria-pressed', value: string) {
+        this.attrs[key] = value;
+      },
+    }));
+    let submit: (event: { preventDefault: () => void }) => Promise<void> = async () => {};
+    const result = { textContent: '' };
+    const elements: Record<string, unknown> = {
+      ...panels,
+      form: { addEventListener: (_event: string, fn: typeof submit) => (submit = fn) },
+      result,
+      from: { value: 'orders@example.com' },
+      subject: { value: 'Your order shipped' },
+      body: { value: 'Synthetic order.' },
+    };
+    const calls: { path: string; options: RequestInit }[] = [];
+    vm.runInNewContext(script, {
+      document: {
+        querySelectorAll: () => tabs,
+        getElementById: (id: string) => elements[id],
+      },
+      fetch: async (path: string, options: RequestInit) => {
+        calls.push({ path, options });
+        return {
+          ok: true,
+          json: async () => ({ category: 'receipts', confidence: 0.9, reason: 'Mock' }),
+        };
+      },
+    });
+    tabs[4]!.click();
+    expect(panels.try!.hidden).toBe(false);
+    expect(panels.activity!.hidden).toBe(true);
+    expect(tabs[4]!.attrs['aria-pressed']).toBe('true');
+    await submit({ preventDefault: () => {} });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.path).toBe('/api/try');
+    expect(JSON.parse(String(calls[0]!.options.body))).toEqual({
+      from: 'orders@example.com',
+      subject: 'Your order shipped',
+      body: 'Synthetic order.',
+    });
+    expect(result.textContent).toContain('Category: receipts\nConfidence: 90%');
   });
 
   it('classifies a synthetic message without persistence', async () => {

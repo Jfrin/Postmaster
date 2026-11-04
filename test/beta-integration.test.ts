@@ -1,22 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { request as httpRequest, type IncomingHttpHeaders, type Server } from 'node:http';
+import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { gmail_v1 } from '@googleapis/gmail';
 import { describe, expect, it } from 'vitest';
 import { MockClassifier } from '../src/classifier.js';
+import { parseConfig } from '../src/config.js';
 import { BetaAccessStore } from '../src/beta/access.js';
-import { BetaActivityStore } from '../src/beta/activity.js';
-import { GmailConsentFlow } from '../src/beta/gmail-consent-flow.js';
-import { GmailConsentStateStore } from '../src/beta/gmail-consent-state.js';
-import { BetaScheduler } from '../src/beta/scheduler.js';
-import { createBetaServer } from '../src/beta/server.js';
-import { BetaSessionStore } from '../src/beta/session-store.js';
+import { createBetaRuntime } from '../src/beta/runtime.js';
 import { GmailTokenVault } from '../src/beta/token-vault.js';
-import { BetaUserConfigStore } from '../src/beta/user-config.js';
-import { BetaCycleRunner } from '../src/beta/worker.js';
 
 const now = Date.parse('2026-11-04T10:00:00Z');
 const origin = 'https://beta.example.com';
@@ -28,11 +22,19 @@ function send(
   method = 'GET',
   body?: unknown,
   csrf?: string,
+  raw = false,
+  extra: Record<string, string> = {},
 ) {
+  const route =
+    raw ||
+    path.startsWith('/auth/google/callback') ||
+    path.startsWith('/auth/google/gmail/callback')
+      ? path
+      : `/beta${path}`;
   return new Promise<{ status: number; headers: IncomingHttpHeaders; body: string }>(
     (resolve, reject) => {
       const req = httpRequest(
-        base + path,
+        base + route,
         {
           method,
           headers: {
@@ -41,6 +43,7 @@ function send(
             ...(method !== 'GET'
               ? { Origin: origin, 'Content-Type': 'application/json', 'X-CSRF-Token': csrf ?? '' }
               : {}),
+            ...extra,
           },
         },
         (res) => {
@@ -63,11 +66,24 @@ function send(
   );
 }
 
-function fakeGmail(subject: string): gmail_v1.Gmail {
+function fakeGmail(subject: string, modified: string[]): gmail_v1.Gmail {
+  const config = parseConfig(readFileSync('config/categories.default.yaml', 'utf8'));
   return {
     users: {
       getProfile: async () => ({ data: { historyId: '100' } }),
-      labels: { list: async () => ({ data: { labels: [] } }) },
+      labels: {
+        list: async () => ({
+          data: {
+            labels: [
+              ...config.categories.map((category) => ({
+                id: category.id,
+                name: `${config.settings.label_prefix}${category.label}`,
+              })),
+              { id: 'content_filtered', name: `${config.settings.label_prefix}Content Filtered` },
+            ],
+          },
+        }),
+      },
       history: { list: async () => ({ data: { history: [] } }) },
       messages: {
         list: async () => ({ data: { messages: [{ id: 'one' }, { id: 'two' }] } }),
@@ -85,8 +101,9 @@ function fakeGmail(subject: string): gmail_v1.Gmail {
             },
           },
         }),
-        modify: async () => {
-          throw new Error('dry run must not modify Gmail');
+        modify: async ({ id }: { id: string }) => {
+          modified.push(id);
+          return { data: {} };
         },
       },
     },
@@ -99,84 +116,66 @@ describe('simulated two-user beta integration', () => {
     const path = join(dir, 'beta.db');
     const key = randomBytes(32);
     const defaults = readFileSync('config/categories.default.yaml', 'utf8');
+    const modifications: Record<string, string[]> = { alice: [], bob: [] };
+    const gmailServices: string[] = [];
     const access = new BetaAccessStore(path);
     const vault = new GmailTokenVault(path, key);
-    const config = new BetaUserConfigStore(path, defaults);
-    const activity = new BetaActivityStore(path);
-    const sessions = new BetaSessionStore(path);
-    const states = new GmailConsentStateStore(path);
-    const consent = new GmailConsentFlow(
-      states,
-      access,
-      vault,
-      {
+    access.bootstrapAdmin('admin');
+    const runtime = createBetaRuntime({
+      databasePath: path,
+      vaultKey: key,
+      defaultConfigYaml: defaults,
+      origin,
+      basePath: '/beta',
+      now: () => now,
+      tickMs: 60_000,
+      identityProvider: {
+        authorizationUrl: (state: string) => `https://accounts.google.com/login?state=${state}`,
+        exchange: async (code: string) => ({ subject: code, verifiedEmail: `${code}@example.com` }),
+      },
+      gmailConsentProvider: {
         authorizationUrl: (state: string) => `https://accounts.google.com/example?state=${state}`,
         exchange: async (_code: string, _verifier: string, _nonce: string, subject: string) =>
           `synthetic-${subject}-token`,
         revoke: async () => {},
       },
-      () => now,
-    );
-    const runner = new BetaCycleRunner({
-      databasePath: path,
-      vaultKey: key,
-      defaultConfigYaml: defaults,
       makeGmailService: (subject, token) => {
+        gmailServices.push(subject);
         expect(token).toBe(`synthetic-${subject}-token`);
-        return fakeGmail(subject);
+        return fakeGmail(subject, modifications[subject]!);
       },
       classifier: new MockClassifier(),
-      now: () => new Date(now),
     });
-    const scheduler = new BetaScheduler(access, runner, () => now, 1, 60_000);
-    access.bootstrapAdmin('admin');
-    scheduler.start();
-    const server: Server = createBetaServer({
-      store: access,
-      origin,
-      now: () => now,
-      userConfigStore: config,
-      activityStore: activity,
-      gmailConsentFlow: consent,
-      processingOnline: () => scheduler.status().online,
-      authenticate: async (req) => sessions.authenticate(req.headers.cookie, now),
-    });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const cookies: Record<string, string> = {};
     const csrf: Record<string, string> = {};
     try {
+      await runtime.start();
+      const base = `http://127.0.0.1:${(runtime.server.address() as AddressInfo).port}`;
+      expect((await send(base, '/api/session', '', 'GET', undefined, undefined, true)).status).toBe(
+        404,
+      );
       for (const subject of ['admin', 'alice', 'bob']) {
-        cookies[subject] = sessions
-          .issue(subject, `${subject}@example.com`, now, 60_000)
-          .split(';')[0]!;
+        const login = await send(base, '/auth/google/start', '');
+        const state = new URL(login.headers.location!).searchParams.get('state')!;
+        const loginCookie = login.headers['set-cookie']![0]!.split(';')[0]!;
+        const callback = await send(
+          base,
+          `/auth/google/callback?state=${state}&code=${subject}`,
+          loginCookie,
+        );
+        expect(callback.status).toBe(302);
+        expect(callback.headers.location).toBe('/beta/');
+        cookies[subject] = callback.headers['set-cookie']![1]!.split(';')[0]!;
         csrf[subject] = (
           JSON.parse((await send(base, '/api/session', cookies[subject]!)).body) as {
             csrfToken: string;
           }
         ).csrfToken;
       }
+      const page = await send(base, '/', cookies.alice!);
+      expect(page.status).toBe(200);
+      expect(page.body).toContain('const basePath="/beta"');
       for (const subject of ['alice', 'bob']) {
-        expect(
-          (await send(base, '/api/access/request', cookies[subject]!, 'POST', {}, csrf[subject]))
-            .status,
-        ).toBe(200);
-      }
-      expect((await send(base, '/api/admin/requests', cookies.alice!)).status).toBe(403);
-      const requests = JSON.parse(
-        (await send(base, '/api/admin/requests', cookies.admin!)).body,
-      ) as unknown[];
-      expect(requests).toHaveLength(2);
-      for (const subject of ['alice', 'bob']) {
-        const approve = {
-          subject,
-          expiresAt: now + 60_000,
-          dailyLimit: subject === 'alice' ? 1 : 2,
-        };
-        expect(
-          (await send(base, '/api/admin/approve', cookies.admin!, 'POST', approve, csrf.admin))
-            .status,
-        ).toBe(200);
         const connect = await send(
           base,
           '/api/gmail/connect',
@@ -199,13 +198,43 @@ describe('simulated two-user beta integration', () => {
             )
           ).status,
         ).toBe(302);
+        expect(access.ownRequest(subject)?.status).toBe('pending');
+        expect(() => vault.loadIfActive(subject, now)).toThrow();
+        expect((await send(base, '/api/config', cookies[subject]!)).status).toBe(403);
+        expect(
+          (await send(base, '/api/processing/start', cookies[subject]!, 'POST', {}, csrf[subject]))
+            .status,
+        ).toBe(403);
+      }
+      await runtime.scheduler.tick();
+      expect(gmailServices).toEqual([]);
+      expect(modifications).toEqual({ alice: [], bob: [] });
+      expect((await send(base, '/api/admin/requests', cookies.alice!)).status).toBe(403);
+      const requests = JSON.parse(
+        (await send(base, '/api/admin/requests', cookies.admin!)).body,
+      ) as unknown[];
+      expect(requests).toHaveLength(2);
+      for (const subject of ['alice', 'bob']) {
+        const approve = {
+          subject,
+          expiresAt: now + 60_000,
+          dailyLimit: subject === 'alice' ? 1 : 2,
+        };
+        expect(
+          (await send(base, '/api/admin/approve', cookies.admin!, 'POST', approve, csrf.admin))
+            .status,
+        ).toBe(200);
+      }
+      await runtime.scheduler.tick();
+      expect(gmailServices).toEqual([]);
+      for (const subject of ['alice', 'bob']) {
         expect(
           (await send(base, '/api/processing/start', cookies[subject]!, 'POST', {}, csrf[subject]))
             .status,
         ).toBe(200);
       }
-      await scheduler.tick();
-      await scheduler.tick();
+      await runtime.scheduler.tick();
+      await runtime.scheduler.tick();
       const aliceRows = JSON.parse((await send(base, '/api/activity', cookies.alice!)).body) as {
         subject: string;
       }[];
@@ -222,6 +251,54 @@ describe('simulated two-user beta integration', () => {
       };
       expect(metrics.readsToday).toBe(3);
       expect(metrics.processedToday).toBe(3);
+      expect(modifications).toEqual({ alice: [], bob: [] });
+      expect(
+        (await send(base, '/api/processing/stop', cookies.bob!, 'POST', {}, csrf.bob)).status,
+      ).toBe(200);
+      expect(
+        (
+          await send(
+            base,
+            '/api/admin/approve',
+            cookies.admin!,
+            'POST',
+            { subject: 'bob', expiresAt: now + 60_000, dailyLimit: 4 },
+            csrf.admin,
+          )
+        ).status,
+      ).toBe(200);
+      const bobConfig = JSON.parse((await send(base, '/api/config', cookies.bob!)).body) as {
+        settings: { dry_run: boolean };
+      };
+      bobConfig.settings.dry_run = false;
+      expect(
+        (await send(base, '/api/config', cookies.bob!, 'PUT', bobConfig, csrf.bob)).status,
+      ).toBe(409);
+      expect(
+        (
+          await send(base, '/api/config', cookies.bob!, 'PUT', bobConfig, csrf.bob, false, {
+            'X-Confirm-Live': 'yes',
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (await send(base, '/api/processing/start', cookies.bob!, 'POST', {}, csrf.bob)).status,
+      ).toBe(409);
+      expect(
+        (
+          await send(
+            base,
+            '/api/processing/start',
+            cookies.bob!,
+            'POST',
+            { confirmLive: true },
+            csrf.bob,
+          )
+        ).status,
+      ).toBe(200);
+      await runtime.scheduler.tick();
+      expect(modifications.alice).toEqual([]);
+      expect(modifications.bob).toEqual(['one', 'two']);
       expect(
         (
           await send(
@@ -238,13 +315,7 @@ describe('simulated two-user beta integration', () => {
       expect(access.processingRequested('bob')).toBe(false);
       expect(vault.load('bob')).toBe('synthetic-bob-token');
     } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await scheduler.stop();
-      runner.close();
-      states.close();
-      sessions.close();
-      activity.close();
-      config.close();
+      await runtime.close();
       vault.close();
       access.close();
       rmSync(dir, { recursive: true });

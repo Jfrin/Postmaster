@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { CodeChallengeMethod, OAuth2Client } from 'google-auth-library';
 import { SCOPES } from '../gmail.js';
 
-/** Separate OAuth client/project from sign-in; callers must also enforce active approval. */
+/** Separate OAuth client/project from sign-in; processing must enforce active approval. */
 export class GoogleGmailConsentProvider {
   private readonly client: OAuth2Client;
 

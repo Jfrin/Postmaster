@@ -48,7 +48,7 @@ function send(
 }
 
 describe('simulated Gmail consent through the beta server', () => {
-  it('requires approval, a CSRF-protected start, and the same user on callback', async () => {
+  it('requires a CSRF-protected start and the same user on callback', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'postmaster-consent-http-'));
     const path = join(dir, 'beta.db');
     const access = new BetaAccessStore(path);
@@ -114,7 +114,7 @@ describe('simulated Gmail consent through the beta server', () => {
             '{}',
           )
         ).status,
-      ).toBe(403);
+      ).toBe(200);
       const start = await send(base, '/api/gmail/connect', 'POST', allowed, '{}');
       expect(start.status).toBe(200);
       const state = new URL(

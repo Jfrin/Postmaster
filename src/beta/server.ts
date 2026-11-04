@@ -25,6 +25,8 @@ export interface BetaSession {
 export interface BetaServerOptions {
   store: BetaAccessStore;
   origin: string;
+  /** Optional single-segment mount path; OAuth callbacks remain at their registered root paths. */
+  basePath?: string;
   /** Must validate an opaque, expiring session cookie; never trust client identity headers. */
   authenticate: (req: IncomingMessage) => Promise<BetaSession | null>;
   /** Optional until Google identity is configured. Gmail consent remains separate. */
@@ -108,8 +110,16 @@ async function handle(
   if (req.headers.host !== expectedHost) return send(res, 403, { error: 'forbidden' });
   const method = req.method ?? 'GET';
   const url = new URL(req.url ?? '/', options.origin);
+  const basePath = options.basePath ?? '';
+  let path = url.pathname;
+  if (basePath) {
+    if (path === basePath) path = '/';
+    else if (path.startsWith(`${basePath}/`)) path = path.slice(basePath.length);
+    else if (path !== '/auth/google/callback' && path !== '/auth/google/gmail/callback')
+      return send(res, 404, { error: 'not found' });
+  }
   const now = options.now?.() ?? Date.now();
-  if (method === 'GET' && url.pathname === '/auth/google/start' && options.identityFlow) {
+  if (method === 'GET' && path === '/auth/google/start' && options.identityFlow) {
     const start = options.identityFlow.start(now);
     res.writeHead(302, {
       Location: start.location,
@@ -119,7 +129,7 @@ async function handle(
     res.end();
     return;
   }
-  if (method === 'GET' && url.pathname === '/auth/google/callback' && options.identityFlow) {
+  if (method === 'GET' && path === '/auth/google/callback' && options.identityFlow) {
     const states = url.searchParams.getAll('state');
     const codes = url.searchParams.getAll('code');
     if (states.length !== 1 || codes.length !== 1)
@@ -132,7 +142,7 @@ async function handle(
         now,
       );
       res.writeHead(302, {
-        Location: '/',
+        Location: `${basePath}/`,
         'Set-Cookie': [IdentityLoginStateStore.clearCookie(), cookie],
         'Cache-Control': 'no-store',
       });
@@ -153,18 +163,17 @@ async function handle(
     session.csrfToken.length < 32 ||
     session.csrfToken.length > 256
   ) {
-    if (method === 'GET' && url.pathname === '/' && options.identityFlow) {
-      res.writeHead(302, { Location: '/auth/google/start', 'Cache-Control': 'no-store' });
+    if (method === 'GET' && path === '/' && options.identityFlow) {
+      res.writeHead(302, {
+        Location: `${basePath}/auth/google/start`,
+        'Cache-Control': 'no-store',
+      });
       res.end();
       return;
     }
     return send(res, 401, { error: 'authentication required' });
   }
-  if (
-    method === 'GET' &&
-    url.pathname === '/auth/google/gmail/callback' &&
-    options.gmailConsentFlow
-  ) {
+  if (method === 'GET' && path === '/auth/google/gmail/callback' && options.gmailConsentFlow) {
     const states = url.searchParams.getAll('state');
     const codes = url.searchParams.getAll('code');
     if (states.length !== 1 || codes.length !== 1)
@@ -177,7 +186,7 @@ async function handle(
         req.headers.cookie,
       );
       res.writeHead(302, {
-        Location: '/',
+        Location: `${basePath}/`,
         'Set-Cookie': GmailConsentStateStore.clearCookie(),
         'Cache-Control': 'no-store',
       });
@@ -200,14 +209,15 @@ async function handle(
     }
   }
   const { store } = options;
-  if (method === 'GET' && url.pathname === '/') return send(res, 200, BETA_PAGE, true);
-  if (method === 'POST' && url.pathname === '/api/logout' && options.identityFlow) {
+  if (method === 'GET' && path === '/')
+    return send(res, 200, BETA_PAGE.replace('__BETA_BASE_PATH__', JSON.stringify(basePath)), true);
+  if (method === 'POST' && path === '/api/logout' && options.identityFlow) {
     if (!Request.safeParse(await readAuthorizedJson(options, req, session)).success)
       return send(res, 400, { error: 'invalid request' });
     res.setHeader('Set-Cookie', options.identityFlow.logout(req.headers.cookie));
     return send(res, 200, { ok: true });
   }
-  if (method === 'GET' && url.pathname === '/api/session') {
+  if (method === 'GET' && path === '/api/session') {
     const request = store.ownRequest(session.subject);
     return send(res, 200, {
       email: session.verifiedEmail,
@@ -223,16 +233,16 @@ async function handle(
       processingRequested: store.processingRequested(session.subject),
     });
   }
-  if (method === 'POST' && url.pathname === '/api/access/request') {
+  if (method === 'POST' && path === '/api/access/request') {
     if (!Request.safeParse(await readAuthorizedJson(options, req, session)).success)
       return send(res, 400, { error: 'invalid request' });
     store.requestAccess(session.subject, session.verifiedEmail, options.now?.() ?? Date.now());
     return send(res, 200, { ok: true });
   }
-  if (method === 'GET' && url.pathname === '/api/config' && options.userConfigStore) {
+  if (method === 'GET' && path === '/api/config' && options.userConfigStore) {
     return send(res, 200, options.userConfigStore.get(session.subject, now));
   }
-  if (method === 'PUT' && url.pathname === '/api/config' && options.userConfigStore) {
+  if (method === 'PUT' && path === '/api/config' && options.userConfigStore) {
     const input = ConfigSchema.safeParse(await readAuthorizedJson(options, req, session));
     if (!input.success) return send(res, 400, { error: 'invalid configuration' });
     return send(
@@ -246,10 +256,10 @@ async function handle(
       ),
     );
   }
-  if (method === 'GET' && url.pathname === '/api/activity' && options.activityStore) {
+  if (method === 'GET' && path === '/api/activity' && options.activityStore) {
     return send(res, 200, options.activityStore.recent(session.subject, now));
   }
-  if (method === 'POST' && url.pathname === '/api/processing/start' && options.processingOnline) {
+  if (method === 'POST' && path === '/api/processing/start' && options.processingOnline) {
     const input = Start.safeParse(await readAuthorizedJson(options, req, session));
     if (!input.success) return send(res, 400, { error: 'invalid request' });
     if (!options.processingOnline() || !options.userConfigStore)
@@ -263,32 +273,34 @@ async function handle(
     );
     return send(res, 200, { ok: true });
   }
-  if (method === 'POST' && url.pathname === '/api/processing/stop' && options.processingOnline) {
+  if (method === 'POST' && path === '/api/processing/stop' && options.processingOnline) {
     if (!Request.safeParse(await readAuthorizedJson(options, req, session)).success)
       return send(res, 400, { error: 'invalid request' });
     store.stopProcessing(session.subject);
     return send(res, 200, { ok: true });
   }
-  if (method === 'POST' && url.pathname === '/api/gmail/connect' && options.gmailConsentFlow) {
+  if (method === 'POST' && path === '/api/gmail/connect' && options.gmailConsentFlow) {
     if (!Request.safeParse(await readAuthorizedJson(options, req, session)).success)
       return send(res, 400, { error: 'invalid request' });
+    if (!store.ownRequest(session.subject))
+      store.requestAccess(session.subject, session.verifiedEmail, options.now?.() ?? Date.now());
     const start = options.gmailConsentFlow.start(session.subject);
     res.setHeader('Set-Cookie', start.cookie);
     return send(res, 200, { location: start.location });
   }
-  if (method === 'POST' && url.pathname === '/api/gmail/disconnect' && options.gmailConsentFlow) {
+  if (method === 'POST' && path === '/api/gmail/disconnect' && options.gmailConsentFlow) {
     if (!Request.safeParse(await readAuthorizedJson(options, req, session)).success)
       return send(res, 400, { error: 'invalid request' });
     await options.gmailConsentFlow.disconnect(session.subject);
     return send(res, 200, { ok: true });
   }
-  if (method === 'POST' && url.pathname === '/api/gmail/forget' && options.gmailConsentFlow) {
+  if (method === 'POST' && path === '/api/gmail/forget' && options.gmailConsentFlow) {
     if (!Request.safeParse(await readAuthorizedJson(options, req, session)).success)
       return send(res, 400, { error: 'invalid request' });
     options.gmailConsentFlow.forget(session.subject);
     return send(res, 200, { ok: true });
   }
-  if (method === 'GET' && url.pathname === '/api/admin/requests') {
+  if (method === 'GET' && path === '/api/admin/requests') {
     const requests = store.listRequests(session.subject).map((r) => ({
       ...r,
       active: store.isActive(r.subject, now),
@@ -297,9 +309,9 @@ async function handle(
     }));
     return send(res, 200, requests);
   }
-  if (method === 'GET' && url.pathname === '/api/admin/metrics')
+  if (method === 'GET' && path === '/api/admin/metrics')
     return send(res, 200, store.metrics(session.subject, now));
-  if (method === 'POST' && url.pathname === '/api/admin/approve') {
+  if (method === 'POST' && path === '/api/admin/approve') {
     const input = Approval.safeParse(await readAuthorizedJson(options, req, session));
     const decisionTime = options.now?.() ?? Date.now();
     if (!input.success || input.data.expiresAt <= decisionTime)
@@ -313,7 +325,7 @@ async function handle(
     );
     return send(res, 200, { ok: true });
   }
-  if (method === 'POST' && url.pathname === '/api/admin/deny') {
+  if (method === 'POST' && path === '/api/admin/deny') {
     const input = Denial.safeParse(await readAuthorizedJson(options, req, session));
     if (!input.success) return send(res, 400, { error: 'invalid request' });
     store.deny(session.subject, input.data.subject, options.now?.() ?? Date.now());
@@ -327,6 +339,8 @@ export function createBetaServer(options: BetaServerOptions): Server {
   const parsed = new URL(options.origin);
   if (parsed.protocol !== 'https:' || parsed.origin !== options.origin)
     throw new Error('exact HTTPS origin required');
+  if (options.basePath && !/^\/[A-Za-z0-9_-]+$/.test(options.basePath))
+    throw new Error('invalid beta mount path');
   return createServer((req, res) => {
     handle(options, req, res).catch((error: unknown) => {
       if (error instanceof AccessDeniedError) return send(res, 403, { error: 'forbidden' });

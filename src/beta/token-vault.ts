@@ -109,6 +109,28 @@ export class GmailTokenVault {
     this.withActiveAccess(subject, now, () => this.save(subject, refreshToken));
   }
 
+  /** Pending users may store consent, but workers can still load only with active approval. */
+  saveIfPendingOrActive(subject: string, refreshToken: string, now: number): void {
+    associatedData(subject);
+    if (!Number.isSafeInteger(now) || now < 0 || now > 253_402_300_799_999)
+      throw new Error('invalid timestamp');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const eligible = this.db
+        .prepare(
+          `SELECT 1 FROM beta_access_requests WHERE subject = ? AND
+          (status = 'pending' OR (status = 'approved' AND expires_at > ?))`,
+        )
+        .get(subject, now);
+      if (!eligible) throw new AccessDeniedError('access not eligible for consent');
+      this.save(subject, refreshToken);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   /** Token retrieval is denied once access expires or an administrator denies it. */
   loadIfActive(subject: string, now: number): string | null {
     return this.withActiveAccess(subject, now, () => {

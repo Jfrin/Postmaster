@@ -1,137 +1,137 @@
-# Postmaster: canonical project plan
+# Postmaster plan
 
-This is the single source of truth for the project roadmap. For exact current behavior and commands, see the code, `README.md`, `config/categories.default.yaml`, and `docker-compose.yml`.
+## Goal
 
-## Goal and scope
+Run the **real multi-user Gmail beta** on the existing Azure VM, initially for the owner's inbox, while keeping the existing mock demo separate.
 
-Build a safe, low-cost Gmail organizer that classifies mail using configurable rules, a sender cache, and Azure OpenAI; applies configured Gmail labels and actions; and provides a dashboard. Start with one private account on Azure, then support a small allowlisted beta with isolated accounts and an admin UI. Public sign-up is a later possibility, not the initial goal.
+The intended flow is **Google sign-in → explicit Gmail consent → admin approval → configure → Start**. Already-approved users skip the approval wait. No mailbox reads or actions occur before approval and an explicit Start. New accounts default to dry run; confirmed live mode must also be available. Stop, denial, expiry and restart prevent new work; requests already in flight may finish.
 
-The app does not send, draft, delete, or unsubscribe from email. Classification and actions are implemented in code; configuration controls categories, rules, and settings. Keep dry run available, require explicit Start, and test behavior offline with synthetic data.
+## Core app and dashboard
 
-## Decisions before deployment
+Checked items exist in the **single-user app** unless explicitly labeled beta. They do not mean the feature is deployed or verified in the real multi-user beta.
 
-| Topic | Status |
-| --- | --- |
-| Audience | **Chosen:** small allowlisted beta; an admin UI should add and remove users. Google OAuth Testing mode also requires users to be added in Google Cloud. |
-| Budget and region | **Tentative:** approximately $10/month in Japan East using Azure for Students. Confirm eligibility, quota, availability, model access, and a full cost estimate before provisioning. |
-| Restart | **Chosen:** processing stays stopped by default after restart. Resume only after a user explicitly starts it; any future auto-resume option must be opt-in. |
-| Hostname and ownership | **Open:** no domain is needed for the private SSH-tunneled dashboard. For the beta, choose an HTTPS hostname, such as a domain you own or a suitable subdomain, and verify Google OAuth domain requirements. Decide who owns the Azure subscription and Google Cloud projects. |
-| Mail data | **Open:** decide what to store, retention periods, deletion and backup policies, and what may be sent to Azure. A privacy-first option is no stored bodies and limited decision metadata, but it is not yet a decision or an implemented retention policy. |
+### Gmail processing
 
-Also decide which categories and actions to use, whether to archive newsletters or promotions, which sensitive senders should bypass the model, how much backlog to process, and whether the account is personal Gmail or Workspace with administrator restrictions.
+- [x] Google OAuth helper, Gmail message fetching, initial inbox lookback and history cursor for later checks.
+- [x] Configurable Gmail labels and `label`, `star`, `mark_read` and `archive` actions; optional unread-only category eligibility. No send, draft, delete or unsubscribe actions.
+- [x] Dry run, explicit Start/Stop and stopped-by-default restart behavior; requests already in flight may finish after Stop.
+- [x] SQLite persistence for decisions, processed-message tracking, sender cache and Gmail cursor; retry and quota/backoff handling.
+- [x] Undo tool for recorded actions. It is not a snapshot of the original mailbox and can affect labels, inbox and unread status.
+- [ ] Review the existing single-user live configuration before any run: it was observed with `dry_run: false` and a 3,650-day lookback. Choose the intended categories, actions, sensitive-sender rules, backlog, body length and limits without overwriting existing settings blindly.
+- [ ] Verify real-inbox Start/Stop, dry-run decisions and persisted cursor/state after restart, then test confirmed live actions. Dry run is available and recommended for review, but the beta must support live use after confirmation.
+- [ ] Test expired/revoked grants, reconnect, quota exhaustion, repeated messages and failures between Gmail modification and SQLite writes. Improve recovery without claiming exactly-once processing.
+- [ ] Decide whether newsletters/promotions should be archived and which sensitive senders should bypass the model. Verify any Workspace administrator restrictions if using a Workspace account.
 
-## Current baseline
+### Classification and configuration
 
-The repository contains a single-user TypeScript/Node app, a Docker Compose deployment, offline tests, and a local dashboard. A successful local or integration check does not imply that remote deployment or beta readiness has been verified.
+- [x] Classify using the first matching rule, an eligible cached sender decision, then Azure OpenAI or the mock classifier.
+- [x] Validate structured model output against categories; use a confidence threshold and fallback for uncertain or invalid results. Content-filtered mail gets a separate label without archive or mark-read actions.
+- [x] Validated YAML categories, examples, descriptions, rules and settings; configuration reloads for subsequent poll cycles. Settings include label prefix, fallback, threshold, lookback, polling interval, body length and model-call cap.
+- [x] Shipped defaults include dry run, a seven-day lookback, 300-second polling and a 1,500-character body limit. Actual live configuration can differ.
+- [x] Synthetic evaluation tool and mock classifier; synthetic Azure classification smoke test completed. These do not establish real-world classification accuracy.
+- [ ] Evaluate a protected, labeled sample and held-out set; compare candidate models and measure errors, token use and costs before choosing thresholds. Never commit real messages or credentials.
+- [ ] Review prompt-injection defenses, sensitive-sender handling, Azure data terms and region before processing real mail. Clearly disclose which metadata and limited body content can be sent to the model.
+- [ ] Consider feedback from corrected classifications and an optional Needs Review digest. These are future features, not existing sending capabilities.
 
-Checked items below mean the implementation or configuration exists in the repository; they do not assert that tests or external deployments were run for this review.
+### Dashboard
 
-- [x] Set up the TypeScript project, linting, formatting, build scripts, Vitest, and environment template.
-- [x] Implement Gmail OAuth helper, message fetching, history cursor, labels, configured actions, and quota handling.
-- [x] Implement validated YAML configuration, categories, rules, unread-only eligibility, and reloads.
-- [x] Implement Azure and mock classifiers, constrained model output, fallback handling, sender cache, and a daily call cap.
-- [x] Implement SQLite state, decision history, dry run, heartbeat, structured logging, and an undo tool.
-- [x] Implement the local dashboard, configuration editing, activity, classification preview, and Start/Stop controls that start stopped.
-- [x] Provide a multi-stage Dockerfile and Compose services with persistent mounts, localhost-only UI, poller healthcheck, and log rotation.
-- [x] Provide offline tests and fakes, coverage thresholds, evaluation tooling, CI workflow with Docker smoke, dependency and secret scans, and Dependabot configuration.
-- [x] Exclude local secrets, data, and real evaluation datasets from Git and Docker build context.
+- [x] Single-user local dashboard with Activity, Categories, Rules, Settings and Try it tabs; Start/Stop, status and configuration Save controls.
+- [x] Activity displays decisions and updates; category and rule editors support changes, including action choices and rule order. Settings expose dry run, thresholds, lookback and limits.
+- [x] Try it previews classification and proposed actions without changing Gmail or saving the message. The single-user dashboard is unauthenticated and must remain on loopback.
+- [ ] Bring the useful dashboard-style Activity, Categories, Rules, Settings and Try it experience to the **real beta** with per-user authorization. The current local beta page uses a JSON configuration editor and is not the finished dashboard.
+- [ ] Improve onboarding and clear Gmail connection, approval, processing, quota, dry-run/live and error status; provide useful notifications and activity/usage charts.
+- [ ] Test dashboard access control, cross-user isolation, configuration validation and live-mode confirmations with real beta sessions and providers before deployment.
 
-- The poller discovers mail using an initial lookback and Gmail history, checks rules and the sender cache, then optionally calls Azure OpenAI. Low-confidence or invalid results use a fallback; content-filtered mail receives a separate label without archive or mark-read actions.
-- The current `gmail.modify` scope is restricted. Configurable actions are `label`, `star`, `mark_read`, and `archive`. Dry runs do not modify Gmail. SQLite stores cursors, decisions, sender cache, and model-call counts; the UI displays recent decisions, including sender and subject.
-- Categories, rules, and settings are validated YAML, reloaded by the poller. Defaults include a 300-second poll interval, 1,500 body characters, a 7-day lookback, and a daily model-call cap. Check the actual live config before use. The cap limits application calls, not total Azure spending.
-- The model receives sender, subject, date, List-Unsubscribe presence, a cleaned and truncated body, and category instructions; it does not receive attachments. A constrained JSON response selects a configured category. Rule and cache hits avoid model calls. Check the chosen model's Azure data terms and region before processing real mail.
-- The dashboard edits configuration, shows activity, offers a classification preview, and controls Start/Stop. Its current UI has **no login** and is bound to localhost by Compose; never expose it publicly. Every container restart begins stopped.
-- The poller and UI are separate containers sharing `data/`; config and credentials are mounted, not baked into the image. The current token file and default-user assumptions are not a multi-user implementation.
-- `scripts/auth.ts`, `scripts/undo.ts`, and `scripts/eval.ts` exist. Undo is not a snapshot of the original mailbox state and can affect labels, inbox, and unread status; see the README before using it.
+### Packaging and operations
 
-## Phase 0: Validate and prepare locally
+- [x] Docker/Compose services for the single-user poller and local-only dashboard, persistent mounts, heartbeat healthcheck and log rotation; operations runbook in `docs/azure-operations.md`.
+- [x] Local secrets, data and real evaluation datasets are excluded from Git and Docker build context.
+- [ ] Verify encrypted, consistent backups and restores of data, configuration and credentials; document deployment, updates, rollback and recovery for the real beta.
+- [ ] Add actionable alerts for failed/stopped processing, Gmail authorization failures, Azure errors and low disk. A heartbeat healthcheck alone is not an alert.
+- [ ] Verify Docker startup, disk protection, SSH/network restrictions and model costs; the existing VM and mock demo do not prove these are ready for real Gmail.
 
-- [x] Verify the existing Gmail credentials with a profile request without reading or changing messages.
-- [ ] Confirm Google Cloud project ownership, OAuth consent screen, Testing/production status, and the intended account. Check token expiry and reconnect requirements.
-- [x] Verify the configured Azure OpenAI deployment with a synthetic classification. This makes a paid model request but does not use real email.
-- [x] Run local CI and offline tests, and build and run the runtime image in an isolated Compose setup. Verify a synthetic mock preview and that startup/restart reset processing to stopped.
-- [x] Run a small synthetic evaluation using the mock classifier. This validates the evaluation path, not real-world model accuracy.
-- [x] Confirm an existing GitHub CI run succeeded, including Node 22/24 checks, Docker smoke, dependency audit, and secret scanning. Newly modified files still need their own GitHub CI run after push.
-- [ ] Review the **existing live config** before starting: it was found with `dry_run: false` and a 3,650-day lookback. Choose categories, actions, body length, call cap, and lookback; enable dry run and review decisions before allowing live changes. Existing settings were not overwritten.
-- [ ] Verify Start and persisted state with the intended inbox in dry run; do not treat the isolated mock preview as a live Gmail dry run.
-- [ ] Evaluate classification on an appropriately protected, labeled sample; compare candidate models and a held-out set, then choose a confidence threshold. Never commit real email or credentials. Avoid promising a model cost before measuring token usage and current prices.
-- [ ] Configure branch protection as appropriate; `main` was unprotected when checked. Keep regression tests, synthetic fixtures, the mock classifier, and offline tests working.
+## Other completed work
 
-**Exit:** the single-user app runs locally in dry run, its safety controls are understood, and live integrations have been tested separately.
+### Testing and project setup
 
-## Phase 1: Private Azure deployment
+- [x] Added lint, formatting, typechecking, configuration validation, builds, offline tests, coverage, synthetic evaluation and GitHub CI with dependency and secret scanning.
+- [x] Ran a synthetic Azure model smoke test and a Gmail profile-only authorization check. Neither is a real multi-user beta end-to-end test.
+- [x] A previous committed revision passed GitHub CI. Subsequent local changes are uncommitted and have not been verified by GitHub CI.
 
-- [ ] Estimate Japan East compute, persistent disk, public IP/network, backup, logging, and model costs with the Azure pricing calculator. Verify Student free-tier terms and model availability; set budget alerts, understanding they are not a hard cap.
-- [ ] Provision a suitable small Linux VM and persistent disk; install Docker and Compose, enable Docker at boot, and restrict SSH to trusted sources or use a VPN. Keep dashboard access on localhost through an SSH tunnel or VPN.
-- [ ] Configure the resource group and Azure model deployment. Transfer secrets securely; restrict `.env`, credentials, token, config, and SQLite access. Never commit them or bake them into images.
-- [ ] Preserve `data/`, `config/`, and the Google token across container and VM restarts. Configure encrypted, consistent SQLite backups and test restoration, including secrets and configuration.
-- [ ] Start in dry run; inspect decisions and errors before enabling live actions. Document deployment, updates, rollback, stop, backup, and recovery.
-- [ ] Add alerts for stopped or unhealthy processing, Gmail authorization failures, Azure errors, and low disk. The existing container heartbeat healthcheck alone is not an alert.
-- [ ] Verify restart stays stopped, Start and Stop work, cursors and decisions survive, and retries/restarts do not produce unintended repeated actions. Test failures between Gmail modification and local persistence; do not assume exactly-once processing.
-- [ ] Harden Azure authentication with managed identity and least-privilege access where supported; replace the API key only after the application supports and tests that flow.
+### VM demo and Google setup
 
-**Exit:** one account runs privately, can be started and stopped safely, and can be restored after failure.
+- [x] The VM runs the **mock demo** at `https://postmaster-demo.japaneast.cloudapp.azure.com` with Google allowlist login. It uses synthetic data, not Gmail. Its dashboard-style tabs are deployed; Start and Save are disabled.
+- [x] The system-assigned managed identity is enabled on `Postmaster-VM`, according to the Azure Portal screenshot.
+- [x] The owner reports completing Google test-user setup as applicable in both projects and enabling the Gmail API in POSTMASTER. Publishing status and membership have not been independently verified.
+- [x] Separate Google sign-in and Gmail web-client files and their callback URLs were checked locally. They have not been tested end to end on the VM.
 
-## Phase 2: Secure multi-user beta
+### Multi-user beta prototype — local only
 
-Authentication alone does not make the existing single-user backend safe for multiple users. Complete isolation, privacy, and policy checks before allowing beta users to connect real inboxes.
+- [x] The local beta prototype supports sign-in, consent before approval, admin approval/denial, per-user settings, activity, quotas, Start/Stop and confirmation-gated live actions. Pending tokens are encrypted and workers cannot load them without active approval.
+- [x] Added per-user workers, scheduler and worker leases, transactional state-write fencing, access expiry and a seven-day expired-token cleanup primitive. Cleanup is not scheduled in production.
+- [x] Synthetic tests cover two-user isolation, no processing before approval and Start, quotas, scheduler fencing and simulated live Gmail modifications. The last full local CI passed **212 tests**, lint, formatting, typecheck, config check and build. This is not a real-Google test.
+- [x] A local Azure Key Vault adapter using managed identity and a pinned secret version is tested with fake responses. No real vault access or recovery has been tested.
 
-Chosen beta direction: users request testing access; an administrator approves or denies requests, sets an expiry and per-user limits, and sees usage metrics. Default to 100 Gmail message-read attempts per user per UTC day, including retries; the limit is configurable per user. Expired access must block new processing and dashboard access, while retaining the encrypted Gmail connection for seven days after approval expiry for possible reapproval. After that, delete the stored token. Backup deletion and Google grant revocation policies remain open; approval expiry cannot interrupt a Gmail request already in flight.
+## To do before running real Gmail
 
-Use a separate Google sign-in-only project for people to authenticate and request access, distinct from the Gmail-consent project. An identity login does not grant Gmail permissions or guarantee beta approval. Verify Google's publishing/domain requirements for each project; while a Gmail OAuth app is in Testing mode, approved users also have to be added as Google test users before they can connect Gmail.
+- [ ] Fix and test consent races involving disconnect, reconnect and denial/re-request. Decide and implement pending/denied token retention and handling of abandoned Google grants.
+- [ ] Fix the retention race where an expired approval moved back to pending retains an old expiry that could cause cleanup to delete a newly saved token. Preserve encrypted connections for **seven days after approval expiry** for reapproval.
+- [ ] Finish the beta's VM startup entry point, initial-admin bootstrap, deployment configuration and proxy routing. Proposed path: `/beta` on the existing HTTPS hostname. Do not replace the mock demo or expose the legacy unauthenticated dashboard.
+- [ ] Verify the VM's managed identity from the VM. Two SSH attempts after it was enabled timed out; do not print the resulting token.
+- [ ] Configure a Key Vault, least-privilege access, protected persistent data, scheduled retention, backups, key recovery and tested restore. The current cleanup only deletes the live token record; it does not revoke Google grants or delete backups.
+- [ ] Resolve clock rollback, scheduler/failure recovery, rate limiting and concurrent revocation risks. Gmail actions and SQLite writes are not atomic; do not promise exactly-once processing.
+- [ ] Review Google restricted-scope requirements, privacy/consent, prompt-injection protection and Azure model data handling. Gmail `gmail.modify` is restricted; Testing or personal-use verification exceptions do not remove security or policy obligations.
+- [ ] Confirm cost and budget alerts for VM, storage, Key Vault and Azure model usage. The application limit is not an Azure spending cap.
+- [ ] Test real Google sign-in, Gmail consent, approval, configuration, Start/Stop, quotas, isolation, reconnect and confirmed live actions on the VM. Only connect the owner's inbox after the security and policy checks above.
 
-`src/beta/` contains offline-tested foundations for access policy, separate Google identity and Gmail-consent flows, isolated per-user configuration, per-user worker leases and a fenced Gmail guard, opaque sessions, encrypted token storage and seven-day live-database cleanup, plus a request/admin UI prototype. The Google flows have only been tested with simulated providers and are not wired to a deployed server or real Google projects; they must not be deployed without end-to-end security review and policy checks. The guard runs immediately before each Gmail API request, but the current single-user app does not install it. Token cleanup requires access and token tables in the same database and a trusted scheduler; it does not revoke Google grants or delete backup copies. The vault requires a separately protected key and does not implement key rotation or revocation. These components are not connected to real authentication or the deployed demo; they do not enforce limits or retention there.
+## What the owner needs to do
 
-The local prototype also includes a per-user cycle runner and SQLite scheduler lease, exercised with synthetic inboxes. Takeover stops processing until each user starts again; worker Gmail calls and state writes check both worker and scheduler fences. Standalone runner calls without a scheduler lease remain test primitives and must not be used by a production scheduler. This is not deployment-ready: clock behavior, process failures, runtime wiring, rate limiting and real-provider end-to-end tests still need review. Already in-flight Gmail requests can finish after lease loss.
+- [x] Enable the VM's system-assigned managed identity.
+- [x] Complete Google test-user setup as applicable and enable the Gmail API.
+- [ ] Review and approve the actual Azure Key Vault and storage costs when the configuration is ready.
+- [ ] Once the beta is ready, sign in, grant Gmail consent, approve the account, configure it and press Start. Connecting, approving, deploying or restarting must not start processing automatically.
 
-The prototype offers a separate Gmail revocation action and explicit local-only token removal, including after approval expires. These paths are tested with fakes only. Disconnect disables new guarded Gmail calls before revocation, but already in-flight calls can finish and concurrent reconnection/revocation needs further design. Local removal does not revoke a Google grant or remove encrypted backups. Leases do not make Gmail actions and database writes atomic; worker wiring, clock behavior, renewal, failure recovery, and concurrent processing still need end-to-end tests.
+## Beta requirements
 
-### Identity and administration
+- Default to **100 Gmail message-read attempts per user per UTC day**, including retries; admins can change each user's limit and approval expiry.
+- Keep each user's tokens, settings, activity, cursors, quotas and processing isolated. An admin can approve or deny users and view usage.
+- Support labels, starring, mark-read and archive according to configuration. The app does not send, draft, delete or unsubscribe from email.
+- The classifier may send sender, subject, date, unsubscribe-header presence and a limited cleaned body to Azure OpenAI; it does not send attachments. Review provider terms and disclose this before real consent.
+- Keep dry run available, require confirmation for live settings and live Start, and begin stopped after restart. Existing single-user settings were observed with live mode and a long lookback; review them before any single-user run.
+- Gmail Testing-mode refresh tokens may expire after seven days. Provide reconnection handling and do not switch to production merely to bypass expiry.
 
-- [ ] Choose an HTTPS hostname and trusted reverse proxy; register a Google OAuth web client and exact callback URLs. Never expose the current unauthenticated UI or trust arbitrary forwarded headers.
-- [ ] Implement Google sign-in separately from explicit Gmail connection and consent. Validate OpenID Connect identity and OAuth state; use authorization-code flow and PKCE where applicable. Identify users by verified Google subject, not a client-supplied email or ID.
-- [ ] Implement secure, expiring sessions with `HttpOnly`, `Secure`, and appropriate `SameSite` cookies, logout, and CSRF protections. Update localhost host/origin checks without losing DNS-rebinding defenses.
-- [ ] Require authentication and authorization for every dashboard, API, and activity stream; deny by default. Build an admin-only UI to invite, add, remove, and manage allowlisted users and administrators. Define bootstrap and recovery for the initial admin.
-- [ ] Handle Gmail token refresh, missing or revoked grants, insufficient scopes, disconnect/revocation, and reconnect. Encrypt refresh tokens at rest with separately protected keys, using Azure Key Vault or an equivalent solution.
-- [ ] Test login, callback validation, session expiry, CSRF, unauthorized requests, admin-only actions, token refresh, and disconnect/reconnect.
+## Deployment notes
 
-### Isolation and processing
+- VM: `azureuser@20.78.9.240`; SSH key: `secrets/Postmaster-VM_key.pem`. Build images locally, not on the 1 GiB VM.
+- The VM's `~/postmaster-demo/docker-compose.demo.yml` was modified to fix a Docker network collision. **Do not overwrite or reset it.** Updating image `postmaster-demo-demo` updates only the synthetic demo.
+- Identity web client: `secrets/google-sign-in-client-secret.json`, callback `/auth/google/callback`. Gmail web client: `secrets/google-client-secret-gmail-web.json`, callback `/auth/google/gmail/callback`. The older `secrets/credentials.json` is a separate desktop client.
+- Never print, paste, commit or bake secrets, tokens, vault keys or real email into images. Keep the Gmail client JSON, databases and backups protected.
+- Beta runtime, Key Vault adapter and deployment-related changes are local and **uncommitted**. Run `git status` before working; do not discard other changes. `docs/image.png` was already deleted in the working tree before the demo update.
+- The beta prototype is in `src/beta/`; `src/beta/runtime.ts` is local integration wiring, not a production entry point. Tests use fake providers, not real Gmail. The legacy single-user dashboard has no login and must remain on loopback.
 
-- [ ] Design user and Gmail-connection records and a per-user context. Replace the shared token, configuration, control files, and default-user assumptions with per-user storage and controls. Scope every query, API response, setting, activity stream, and background job to its owner.
-- [ ] Select durable storage for the expected concurrency and budget; SQLite may be evaluated for a small single-instance beta, while managed PostgreSQL and a queue are possible later choices. Plan and test migrations and backup recovery; neither managed PostgreSQL nor a queue is assumed to fit $10/month.
-- [ ] Design scheduling, per-user history cursors, retries, quota backoff, rate limits, and locking or leases to prevent overlapping workers during deployment or failure. Isolate failures between users.
-- [ ] Preserve dry runs, per-user Start/Stop and call caps, sender-cache isolation, content-filter handling, and idempotency. Design for failures between Gmail and database operations rather than assuming exactly-once delivery.
-- [ ] Implement account deletion and retention for settings, decisions, sender caches, tokens, logs, and backups. Balance metadata deletion with deduplication, recovery, and undo needs.
-- [ ] Test at least two users end to end, including cross-account access attempts, simultaneous jobs, restart recovery, duplicates, and partial failures.
+## Other improvements
 
-### Privacy, policy, and beta readiness
+### Quality and reliability
 
-- [ ] Before inviting testers, review Google's approved Gmail use cases and user data policies, including sending email content to Azure OpenAI. Document the data flow, the selected model's terms, consent, retention, deletion, and security controls.
-- [ ] Confirm the applicable Google OAuth verification and security-assessment requirements for the intended beta and production use. `gmail.modify` is restricted; server-side storage or transmission can require a third-party assessment. Do not assume a user-count threshold alone determines compliance.
-- [ ] If using an external OAuth app in Testing mode, add each tester in Google Cloud as well as the app allowlist; Gmail-scoped refresh tokens expire after seven days, so provide reconnection handling. Do not switch to production solely to bypass expiry without checking Google requirements.
-- [ ] Provide clear privacy and consent information; define a support contact, incident response, audit events, and privacy-conscious logs without email bodies, tokens, or secrets.
-- [ ] Set per-user usage limits, cost and operational alerts, and test backups and recovery. Run the small allowlisted beta only after the security and isolation checks pass.
+- [ ] Evaluate classification accuracy and model cost using appropriately protected, labeled samples; compare models and tune categories, rules and confidence thresholds. Never commit real email.
+- [ ] Improve observability: alerts for processing failures, expired Google grants, Azure errors, low disk and unhealthy services; add cost monitoring and operational dashboards.
+- [ ] Test backups, restoration, migrations, restarts, partial failures and rollback procedures. Improve deletion of user data from logs and backups and document recovery limits.
+- [ ] Review SSH/network restrictions, branch protection, dependency updates and automated release/deployment processes.
 
-**Exit:** at least two allowlisted users can independently connect, configure, pause, and process mail without accessing each other's data; applicable beta policy requirements are met.
+### User experience and portfolio
 
-## Phase 3: Public launch, only if desired
+- [ ] Improve beta onboarding, configuration editing, connection status, error messages, activity charts and usage displays.
+- [ ] Add architecture documentation and screenshots; consider notifications, feedback on classifications, a review digest or Gmail push notifications.
+- [ ] Consider automated image publishing and a manually triggered smoke test using a throwaway account.
 
-- [ ] Complete applicable Google restricted-scope verification and any required security assessment before production/public access; budget for ongoing review and reassessment where required.
-- [ ] Publish privacy policy and terms describing Gmail permissions, Azure processing, retention, and deletion. Complete a threat model and security review of authorization, tokens, sessions, logs, backups, and incident response.
-- [ ] Review beta reliability, cost, support, and abuse controls. Add CI, vulnerability checks, deployment/rollback procedures, restoration tests, and availability expectations appropriate for the audience.
-- [ ] If load warrants it, evaluate managed PostgreSQL, queues/workers, managed containers, and per-user billing or limits. Re-evaluate cost and architecture rather than assuming the existing Compose app can move unchanged.
+### Wider release, only if desired
 
-## Optional improvements
-
-- [ ] Onboarding explaining consent, dry run, and Start; connection status, error notifications, and activity/usage charts.
-- [ ] Synthetic demo mode and hosted architecture documentation/screenshots.
-- [ ] Feedback from corrected classifications, an optional Needs Review digest, or Gmail push notifications instead of polling. These are future features, not existing sending capabilities.
-- [ ] Automated image publishing and a manually triggered live smoke test using a throwaway account.
+- [ ] Before public access, complete applicable Google verification and any required security assessment; publish privacy information and terms and prepare support and incident response.
+- [ ] Reassess capacity, storage, scheduling, costs and abuse controls before expanding beyond a small allowlisted beta. Managed databases or queues are options, not current requirements.
 
 ## References
 
-- [Azure for Students](https://azure.microsoft.com/en-us/free/students/) and [Azure pricing calculator](https://azure.microsoft.com/en-us/pricing/calculator/)
-- [Gmail API scopes](https://developers.google.com/workspace/gmail/api/auth/scopes)
-- [Google OAuth refresh-token expiration](https://developers.google.com/identity/protocols/oauth2#expiration)
+- [Google Gmail API scopes](https://developers.google.com/workspace/gmail/api/auth/scopes)
 - [Google restricted-scope verification](https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification)
-- [Azure Container Apps scaling](https://learn.microsoft.com/en-us/azure/container-apps/scale-app)
+- [Google Workspace API policy](https://developers.google.com/workspace/gmail/api/policy)
+- [Azure pricing calculator](https://azure.microsoft.com/en-us/pricing/calculator/)

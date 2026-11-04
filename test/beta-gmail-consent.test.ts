@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OAuth2Client } from 'google-auth-library';
@@ -125,7 +125,6 @@ describe('Gmail connection foundations', () => {
     try {
       access.bootstrapAdmin('admin');
       access.requestAccess('alice', 'alice@example.com', now);
-      expect(() => flow.start('alice')).toThrow(AccessDeniedError);
       access.approve('admin', 'alice', now + 1000, 100, now);
       const start = flow.start('alice');
       const state = new URL(start.location).searchParams.get('state')!;
@@ -163,6 +162,59 @@ describe('Gmail connection foundations', () => {
       expect(vault.load('alice')).toBe('replacement-token');
       flow.forget('alice');
       expect(vault.load('alice')).toBeNull();
+    } finally {
+      states.close();
+      vault.close();
+      access.close();
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it('stores pending consent encrypted but denies processing and rejects denial during exchange', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'postmaster-pending-consent-'));
+    const path = join(dir, 'beta.db');
+    const access = new BetaAccessStore(path);
+    const vault = new GmailTokenVault(path, randomBytes(32));
+    const states = new GmailConsentStateStore(path);
+    const provider = {
+      authorizationUrl: (state: string) => `https://accounts.google.com/example?state=${state}`,
+      exchange: vi.fn(async () => 'synthetic-refresh-token'),
+      revoke: vi.fn(async (_token: string) => {}),
+    };
+    const flow = new GmailConsentFlow(states, access, vault, provider, () => now);
+    try {
+      access.bootstrapAdmin('admin');
+      access.requestAccess('alice', 'alice@example.com', now);
+      const start = flow.start('alice');
+      await flow.finish(
+        'alice',
+        new URL(start.location).searchParams.get('state')!,
+        'code',
+        start.cookie.split(';')[0],
+      );
+      expect(flow.isConnected('alice')).toBe(true);
+      expect(() => vault.loadIfActive('alice', now)).toThrow(AccessDeniedError);
+      expect(() => access.startProcessingWithConfirmation('alice', now, false)).toThrow(
+        AccessDeniedError,
+      );
+      expect(readFileSync(path).includes(Buffer.from('synthetic-refresh-token'))).toBe(false);
+
+      access.requestAccess('bob', 'bob@example.com', now);
+      const bob = flow.start('bob');
+      provider.exchange.mockImplementationOnce(async () => {
+        access.deny('admin', 'bob', now);
+        return 'bob-token';
+      });
+      await expect(
+        flow.finish(
+          'bob',
+          new URL(bob.location).searchParams.get('state')!,
+          'code',
+          bob.cookie.split(';')[0],
+        ),
+      ).rejects.toThrow(AccessDeniedError);
+      expect(vault.load('bob')).toBeNull();
+      expect(() => flow.start('bob')).toThrow(AccessDeniedError);
     } finally {
       states.close();
       vault.close();
