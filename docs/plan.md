@@ -1,6 +1,52 @@
 # Postmaster plan
 
-## Goal
+## Current state (last verified 2026-11-05)
+
+- The live site is `https://postmaster-demo.japaneast.cloudapp.azure.com/`: public landing, `/privacy`, `/terms` and `/beta/apply`; identity sign-in at `/beta`; authenticated synthetic demo at `/demo`; restricted admin at `/beta/admin`. The landing page has no admin link. The demo uses synthetic data and does not access Gmail.
+- The deployed beta image is `postmaster-beta:terms-20261105`; the demo remains on `postmaster-beta:setup-guidance-20261105`. The live Caddy configuration routes the public and beta paths separately from the authenticated demo. Do not overwrite the independently modified `~/postmaster-demo/docker-compose.demo.yml`; the demo image override is separate.
+- The owner explicitly authorized approved applicants despite unresolved security and recovery gaps. An application's first matching Google-authoritative identity binds its subject; admin access requires both the verified `joseofrin@gmail.com` email and the configured subject. Identity sign-in and Gmail consent use separate Google projects, `postmaster-sign-in` and `postmaster-513311` respectively.
+- Approval, separate Gmail consent, configuration and an explicit Start are required for mailbox processing. New configurations default to dry run and a 365-day lookback; live settings and Start require confirmation. Existing settings are not overwritten. Stop, expiry, denial and restart block new work, but in-flight requests may finish. The default quota is 100 Gmail message-read attempts per user per UTC day, including retries.
+- At last deployment verification there was one application, two saved configurations, and zero accounts processing. Do not assume this remains current. A beta restart stops processing and users must explicitly Start again. Preserve data and verify running state before any restart.
+- The privacy policy and terms are published, but Google branding and Gmail restricted-scope verification are not confirmed. Full local CI passed **282 tests** for the deployed image. Authenticated admin/demo and real Gmail processing still need end-to-end browser/provider verification.
+- Operator: Jose Andres Ofrin, Philippines; support: `joseofrin@gmail.com`. Gmail classification may send sender, subject, date, unsubscribe-header presence and limited cleaned body text to Azure OpenAI Global Standard, including in dry run; attachments are not sent to the model.
+
+## Consolidated priorities
+
+### Google, privacy and real-world verification
+
+- [ ] Enter the live privacy and terms URLs in Gmail project `postmaster-513311` branding; review domain ownership, brand verification, Gmail restricted-scope requirements and any required assessment. Do not claim verification or policy compliance is complete. Testing-mode users may need enrollment in both projects; Testing refresh tokens can expire after seven days.
+- [ ] Review actual data handling, Azure provider terms, Google Limited Use, prominent disclosures, consent, deletion and retention against applicable policies and Philippine law. Public pages alone do not establish compliance.
+- [ ] Verify real browser flows for admin and non-admin access, application/approval, both Google OAuth flows and demo sign-in. With the owner's explicit Start, test Gmail dry-run processing and backlog completion, then separately test confirmed live actions, Stop, reconnect, quota and failure handling. Do not claim successful real processing based on synthetic tests.
+- [ ] Review classification accuracy using protected, labeled examples; assess prompt injection, sensitive-sender handling, model cost and Global Standard data handling. Verify any Azure Prompt Shields integration rather than assuming it is enabled.
+
+### Security, recovery and operations
+
+- [ ] Isolate VM managed identity and Key Vault access: other workloads on the VM may be able to retrieve the Gmail token encryption key. Treat the VM as the identity boundary; firewall experiments were temporary and are not deployed protection.
+- [ ] Protect and verify the full data path, including mail-derived SQLite data, WAL, logs, temporary files and backups. Managed disks and VM host encryption are enabled, but complete protection and isolation are not established.
+- [ ] Complete least-privilege storage access, automated encrypted off-VM backups, monitoring, real-data restore and pinned Key Vault key recovery. Synthetic backup/restore tests passed; actual scheduling and recovery remain unverified. Review `docs/beta-backup.md` and `docs/beta-revocation-recovery.md` before operating.
+- [ ] Review revocation, crash recovery and deletion behavior. Scheduled token cleanup removes eligible pending tokens seven days after consent, denied tokens seven days after denial, and expired tokens seven days after approval expiry; unknown timestamps and unresolved revocations can retain tokens. Cleanup does not revoke Google grants or erase backups or journals.
+- [ ] Review rate limiting, clock rollback, scheduler/lease recovery, Gmail request fencing and the non-atomic interval between authorization and dispatch. Gmail actions and SQLite commits are not atomic; do not promise exactly-once processing.
+- [ ] Add and test operational and cost alerts, backup failure detection, disk/network protections, recovery procedures and dependency updates. A prior dependency audit found development-toolchain advisories; review safely without blind breaking upgrades.
+
+### Product and release
+
+- [ ] Improve onboarding, activity, configuration and usage visibility as needed; keep beta and local single-user behavior distinct. Review existing local single-user settings before running because they may use live mode and a longer lookback.
+- [ ] Reassess Google verification, security, abuse controls, capacity and support before broader access. No public-release readiness is implied by the existing closed-beta exception.
+
+## Working constraints
+
+- Build images locally, not on the small VM. Preserve the live demo Compose file and use separate overrides. Keep the unauthenticated local dashboard on loopback. Do not print, commit, bake into images or expose secrets, tokens, vault keys or real mail.
+- Do not commit, push, modify `.github/`, or change GitHub settings. Preserve unrelated user changes and check the working tree before editing. No deployment or processing restart without the appropriate owner instruction.
+- `docs/privacy-terms-draft.md` contains historical drafts; the served documents are `src/beta/privacy-page.ts` and `src/beta/terms-page.ts`. Operational procedures are in `docs/azure-operations.md`, `docs/beta-backup.md` and `docs/beta-revocation-recovery.md`.
+
+## Historical notes
+
+The following is retained for operational context. It records past observations and superseded plans, **not** the current deployment state or current task checklist. Use the consolidated sections above.
+
+<details>
+<summary>Earlier planning and deployment history</summary>
+
+## Earlier goal
 
 Run the **real multi-user Gmail beta** on the existing Azure VM, initially for the owner's inbox and then a small number of invited portfolio reviewers, while keeping the existing mock demo separate. This is a limited test, not a public product launch.
 
@@ -216,3 +262,5 @@ Checked items exist in the **single-user app** unless explicitly labeled beta. T
 - [Google restricted-scope verification](https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification)
 - [Google Workspace API policy](https://developers.google.com/workspace/gmail/api/policy)
 - [Azure pricing calculator](https://azure.microsoft.com/en-us/pricing/calculator/)
+
+</details>

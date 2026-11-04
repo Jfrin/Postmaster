@@ -4,7 +4,7 @@
 
 [Visit Postmaster](https://postmaster-demo.japaneast.cloudapp.azure.com/) — explore the synthetic demo or apply for the closed beta.
 
-Postmaster classifies incoming email using configurable rules, a learned sender cache, and Azure OpenAI. It applies Gmail labels and optional actions based on the result, with a local dashboard for reviewing decisions and managing the pipeline.
+Postmaster classifies incoming email using configurable rules, a learned sender cache, and Azure OpenAI. It can apply Gmail labels and optional actions, with a dashboard for reviewing activity and managing settings.
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-339933?style=flat&logo=nodedotjs&logoColor=white)
@@ -13,7 +13,14 @@ Postmaster classifies incoming email using configurable rules, a learned sender 
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat&logo=sqlite&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=white)
 
-For private VM deployment, backups, and monitoring, see the [Azure operations runbook](docs/azure-operations.md).
+## Try Postmaster
+
+- [Synthetic demo](https://postmaster-demo.japaneast.cloudapp.azure.com/demo): sign in to explore example data; it does not connect to Gmail.
+- [Apply for the closed beta](https://postmaster-demo.japaneast.cloudapp.azure.com/beta/apply): applications are reviewed individually and decisions are not emailed automatically.
+- [Beta sign-in](https://postmaster-demo.japaneast.cloudapp.azure.com/beta): for approved accounts. Sign-in and Gmail authorization are separate.
+- [Privacy policy](https://postmaster-demo.japaneast.cloudapp.azure.com/privacy) · [Terms of service](https://postmaster-demo.japaneast.cloudapp.azure.com/terms)
+
+The hosted service is experimental. Approval, separate Gmail consent, configuration and an explicit **Start** are required before processing. New beta configurations default to dry run; enabling live mode requires confirmation. Google test-user enrollment may be required. Processing starts stopped after a restart, and in-flight requests may finish after Stop.
 
 ## Highlights
 
@@ -22,7 +29,7 @@ For private VM deployment, backups, and monitoring, see the [Azure operations ru
 - **Safe operation:** supports dry runs, configurable actions, an LLM call cap, and explicit Start/Stop controls. The application has no send or delete action.
 - **Resilient processing:** persists decisions and Gmail history cursors in SQLite, skips already-processed messages, and retries failures without advancing the cursor prematurely.
 - **Quota-aware Gmail access:** limits request usage and backs off when Gmail throttles requests.
-- **Local dashboard:** inspect recent activity, edit categories and rules, adjust settings, and test sample emails without modifying Gmail.
+- **Dashboard:** inspect activity, edit categories and rules, adjust settings, and control processing. The local single-user dashboard also previews sample messages.
 
 ## How it works
 
@@ -34,7 +41,7 @@ Gmail inbox
                                            ↓
                               Gmail labels / actions
                                            ↓
-                            SQLite + local dashboard
+                               SQLite + dashboard
 ```
 
 1. **Discover:** scan the configured inbox lookback on Start, then use Gmail history to find new messages.
@@ -44,7 +51,9 @@ Gmail inbox
 
 Azure content-filter blocks are filed separately under **AI/Content Filtered** (with your configured label prefix), without archiving or marking the message read. These decisions are treated as processed, not automatically retried. Other Azure errors remain retryable. The ID `content_filtered` and label `Content Filtered` are reserved for this built-in outcome.
 
-## Getting started
+## Local single-user setup
+
+These instructions run a separate local instance, not the hosted beta. For private VM deployment, backups and monitoring, see the [Azure operations runbook](docs/azure-operations.md).
 
 ### Prerequisites
 
@@ -70,7 +79,7 @@ Postmaster requests the Gmail `gmail.modify` OAuth scope. Mock mode avoids Azure
 
    Open the URL printed by the command and approve access. The token is saved to `secrets/token.json`.
 
-3. Review `config/categories.yaml` and set `settings.dry_run: true` before the first run. The shipped reference configuration is `config/categories.default.yaml`.
+3. If `config/categories.yaml` does not exist, copy `config/categories.default.yaml` to that path. Review the configuration and set `settings.dry_run: true` before the first run. Do not overwrite an existing configuration. The shipped default uses a 365-day lookback; existing configurations may differ.
 
 4. Build and start the containers:
 
@@ -84,9 +93,9 @@ Postmaster starts **stopped** after each container restart. **Start** scans the 
 
 ## Configuration
 
-Categories, rules, and settings live in `config/categories.yaml` and can also be edited in the dashboard. Categories define labels, descriptions, examples, actions, and optional unread-only eligibility. Settings include the confidence threshold, fallback category, poll interval, lookback, body length, and daily LLM call cap.
+For the local single-user app, categories, rules, and settings live in `config/categories.yaml` and can also be edited in the dashboard. The hosted beta stores settings per account instead. Categories define labels, descriptions, examples, actions, and optional unread-only eligibility. Settings include the confidence threshold, fallback category, poll interval, lookback, body length, and daily LLM call cap.
 
-Supported actions are `label`, `star`, `mark_read`, and `archive`. Choose actions carefully: live mode can change read and inbox status. Saving from the UI rewrites the live YAML, preserves the previous version as `categories.yaml.bak`, and removes YAML comments. The shipped default is not changed.
+Supported actions are `label`, `star`, `mark_read`, and `archive`. Choose actions carefully: live mode can change read and inbox status. Saving from the local UI rewrites the live YAML, preserves the previous version as `categories.yaml.bak`, and removes YAML comments. The shipped default is not changed.
 
 ## Commands
 
@@ -123,12 +132,13 @@ This is a smoke test, not a measure of model accuracy. For integration checks, `
 
 ## Architecture and testing
 
-The application separates the Gmail client, classifier, pipeline, and persistent state behind testable interfaces. The dashboard and poller run as separate containers and share local state. Configuration is validated with Zod; logs are structured with Pino.
+The application separates the Gmail client, classifier, pipeline, and persistent state behind testable interfaces. In the local single-user setup, the dashboard and poller run as separate containers and share local state. The hosted beta uses separate account-scoped access, settings and processing controls. Configuration is validated with Zod; logs are structured with Pino.
 
 Vitest exercises the pipeline offline using fake mail and classifier implementations, with mocked Gmail and Azure clients. Tests cover dry-run behavior, idempotency, retry and quota handling, call limits, configuration validation, and model output validation.
 
 ## Privacy and security
 
-- With Azure enabled, message metadata and a cleaned, truncated body are sent to the configured Azure deployment for classification. Review your Azure configuration and policies before processing sensitive mail.
-- The dashboard binds to `127.0.0.1` and has no login. Do not expose it publicly.
+- When model classification is needed, sender, subject, date, unsubscribe-header presence and a limited cleaned message body may be sent to Azure OpenAI, including in dry run. Attachments are not sent to the model. The hosted beta uses Global Standard processing, which may occur outside the VM region. See the [privacy policy](https://postmaster-demo.japaneast.cloudapp.azure.com/privacy).
+- The hosted beta is experimental; security isolation, backups, recovery and monitoring are not fully hardened. Do not assume Google verification or compliance is complete.
+- The local single-user dashboard binds to `127.0.0.1` and has no login. Do not expose it publicly.
 - Keep `.env`, `secrets/`, `data/`, and real email datasets private. Use synthetic examples in tests and never commit credentials or real email.
