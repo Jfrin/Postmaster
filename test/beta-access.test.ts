@@ -23,6 +23,7 @@ describe('beta access policy foundation', () => {
     expect(() => store.deny('user-a', 'user-a', now)).toThrow(AccessDeniedError);
     expect(() => store.metrics('user-a', now)).toThrow(AccessDeniedError);
     expect(() => store.readUsage('user-a', 'user-a', now)).toThrow(AccessDeniedError);
+    expect(() => store.cycleUsage('user-a', 'user-a', now)).toThrow(AccessDeniedError);
     expect(store.listRequests('google-admin-subject')).toEqual([
       {
         subject: 'user-a',
@@ -71,6 +72,9 @@ describe('beta access policy foundation', () => {
       expired: 0,
       denied: 0,
       readsToday: 3,
+      cyclesToday: 0,
+      processedToday: 0,
+      failedToday: 0,
     });
     expect(store.reserveRead('user-a', tomorrow)).toBe(1);
   });
@@ -96,6 +100,9 @@ describe('beta access policy foundation', () => {
       expired: 0,
       denied: 1,
       readsToday: 1,
+      cyclesToday: 0,
+      processedToday: 0,
+      failedToday: 0,
     });
   });
 

@@ -6,6 +6,8 @@ import { stringify } from 'yaml';
 import { ConfigSchema, parseConfig, type Config } from '../config.js';
 import { AccessDeniedError } from './access.js';
 
+export class ConfigLiveConfirmationError extends Error {}
+
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   DatabaseSync: typeof DatabaseSyncType;
 };
@@ -77,11 +79,17 @@ export class BetaUserConfigStore {
     });
   }
 
-  save(subject: string, input: unknown, now: number): Config {
+  save(subject: string, input: unknown, now: number, confirmLive = false): Config {
     const config = ConfigSchema.parse(input);
     const yaml = stringify(config, { lineWidth: 0 });
     if (Buffer.byteLength(yaml) > 100_000) throw new Error('configuration too large');
     return this.withActive(subject, now, () => {
+      const previous = this.db
+        .prepare('SELECT yaml FROM beta_user_configs WHERE subject = ?')
+        .get(subject) as { yaml: string } | undefined;
+      const wasDryRun = parseConfig(previous?.yaml ?? this.defaultYaml).settings.dry_run;
+      if (wasDryRun && !config.settings.dry_run && !confirmLive)
+        throw new ConfigLiveConfirmationError('live-mode confirmation required');
       this.db
         .prepare(
           `INSERT INTO beta_user_configs (subject, yaml, updated_at) VALUES (?, ?, ?)

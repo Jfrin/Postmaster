@@ -136,6 +136,13 @@ export class GmailTokenVault {
     return !!this.db.prepare('SELECT 1 FROM beta_gmail_tokens WHERE subject = ?').get(subject);
   }
 
+  isEnabled(subject: string): boolean {
+    associatedData(subject);
+    return !!this.db
+      .prepare('SELECT 1 FROM beta_gmail_tokens WHERE subject = ? AND enabled = 1')
+      .get(subject);
+  }
+
   /** Disable new Gmail attempts before contacting Google to revoke the token. */
   disableAndLoad(subject: string): string | null {
     associatedData(subject);

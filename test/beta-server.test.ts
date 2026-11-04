@@ -151,6 +151,9 @@ describe('unwired beta request and admin server', () => {
       expired: 0,
       denied: 0,
       readsToday: 1,
+      cyclesToday: 0,
+      processedToday: 0,
+      failedToday: 0,
     });
     expect(await (await request('/api/admin/requests', 'admin')).json()).toMatchObject([
       { subject: 'alice-sub', dailyLimit: 7, attempts: 1 },

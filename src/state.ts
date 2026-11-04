@@ -30,6 +30,9 @@ export interface DecisionMeta {
   subject?: string;
 }
 
+/** Called inside the same SQLite write transaction as each state mutation. */
+export type StateWriteGuard = (db: DatabaseSyncType, userId: string) => void;
+
 /** SQLite state. Every table carries user_id from day one so multi-user is not a rewrite. */
 export class State {
   private readonly db: DatabaseSyncType;
@@ -37,6 +40,7 @@ export class State {
   constructor(
     path: string,
     private readonly userId = 'default',
+    private readonly writeGuard?: StateWriteGuard,
   ) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
@@ -77,6 +81,19 @@ export class State {
     this.db.close();
   }
 
+  private write(operation: () => void): void {
+    if (!this.writeGuard) return operation();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.writeGuard(this.db, this.userId);
+      operation();
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   getCursor(): string | null {
     const row = this.db
       .prepare('SELECT value FROM kv WHERE user_id = ? AND key = ?')
@@ -85,9 +102,11 @@ export class State {
   }
 
   setCursor(value: string): void {
-    this.db
-      .prepare('INSERT OR REPLACE INTO kv (user_id, key, value) VALUES (?, ?, ?)')
-      .run(this.userId, 'historyId', value);
+    this.write(() => {
+      this.db
+        .prepare('INSERT OR REPLACE INTO kv (user_id, key, value) VALUES (?, ?, ?)')
+        .run(this.userId, 'historyId', value);
+    });
   }
 
   /** With appliedOnly, a dry-run decision does not count, so going live still files the message. */
@@ -107,9 +126,10 @@ export class State {
     now: Date,
     meta: DecisionMeta = {},
   ): void {
-    this.db
-      .prepare(
-        `INSERT INTO decisions
+    this.write(() =>
+      this.db
+        .prepare(
+          `INSERT INTO decisions
          (user_id, message_id, category, confidence, source, reason, applied, created_at, sender, subject)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (user_id, message_id) DO UPDATE SET
@@ -117,19 +137,20 @@ export class State {
            reason = excluded.reason, applied = excluded.applied, created_at = excluded.created_at,
            sender = excluded.sender, subject = excluded.subject
          WHERE decisions.applied = 0 AND excluded.applied = 1`,
-      )
-      .run(
-        this.userId,
-        messageId,
-        d.category,
-        d.confidence,
-        d.source,
-        d.reason,
-        applied ? 1 : 0,
-        now.toISOString(),
-        meta.sender ?? null,
-        meta.subject ?? null,
-      );
+        )
+        .run(
+          this.userId,
+          messageId,
+          d.category,
+          d.confidence,
+          d.source,
+          d.reason,
+          applied ? 1 : 0,
+          now.toISOString(),
+          meta.sender ?? null,
+          meta.subject ?? null,
+        ),
+    );
   }
 
   recent(limit: number): DecisionRow[] {
@@ -159,21 +180,23 @@ export class State {
 
   /** Same category with high confidence N times in a row earns a cache entry. */
   observeSender(sender: string, category: string, confidence: number): void {
-    if (confidence < CACHE_MIN_CONFIDENCE) {
+    this.write(() => {
+      if (confidence < CACHE_MIN_CONFIDENCE) {
+        this.db
+          .prepare('DELETE FROM sender_cache WHERE user_id = ? AND sender = ?')
+          .run(this.userId, sender);
+        return;
+      }
       this.db
-        .prepare('DELETE FROM sender_cache WHERE user_id = ? AND sender = ?')
-        .run(this.userId, sender);
-      return;
-    }
-    this.db
-      .prepare(
-        `INSERT INTO sender_cache (user_id, sender, category, streak) VALUES (?, ?, ?, 1)
+        .prepare(
+          `INSERT INTO sender_cache (user_id, sender, category, streak) VALUES (?, ?, ?, 1)
          ON CONFLICT(user_id, sender) DO UPDATE SET
            streak = CASE WHEN sender_cache.category = excluded.category
              THEN sender_cache.streak + 1 ELSE 1 END,
            category = excluded.category`,
-      )
-      .run(this.userId, sender, category);
+        )
+        .run(this.userId, sender, category);
+    });
   }
 
   llmCallsToday(now: Date): number {
@@ -184,11 +207,13 @@ export class State {
   }
 
   countLlmCall(now: Date): void {
-    this.db
-      .prepare(
-        `INSERT INTO llm_calls (user_id, day, count) VALUES (?, ?, 1)
+    this.write(() => {
+      this.db
+        .prepare(
+          `INSERT INTO llm_calls (user_id, day, count) VALUES (?, ?, 1)
          ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1`,
-      )
-      .run(this.userId, now.toISOString().slice(0, 10));
+        )
+        .run(this.userId, now.toISOString().slice(0, 10));
+    });
   }
 }

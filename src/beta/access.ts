@@ -3,6 +3,8 @@ import { dirname } from 'node:path';
 import { createRequire } from 'node:module';
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import type { GmailRequestKind } from '../gmail.js';
+import { parseConfig } from '../config.js';
+import type { CycleStats } from '../pipeline.js';
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   DatabaseSync: typeof DatabaseSyncType;
@@ -13,9 +15,16 @@ export const DEFAULT_DAILY_READ_LIMIT = 100;
 export class AccessDeniedError extends Error {}
 export class DailyReadLimitError extends Error {}
 export class LeaseLostError extends Error {}
+export class LiveConfirmationRequiredError extends Error {}
 
 export interface WorkerLease {
   subject: string;
+  owner: string;
+  fence: number;
+  scheduler?: SchedulerLease;
+}
+
+export interface SchedulerLease {
   owner: string;
   fence: number;
 }
@@ -93,9 +102,39 @@ export class BetaAccessStore {
         subject TEXT PRIMARY KEY, owner TEXT NOT NULL, fence INTEGER NOT NULL, expires_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS beta_processing_controls (
-        subject TEXT PRIMARY KEY, running INTEGER NOT NULL CHECK (running IN (0, 1))
+        subject TEXT PRIMARY KEY, running INTEGER NOT NULL CHECK (running IN (0, 1)),
+        scanned_backlog_days INTEGER, generation INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS beta_cycle_metrics (
+        subject TEXT NOT NULL, day TEXT NOT NULL, cycles INTEGER NOT NULL,
+        seen INTEGER NOT NULL, processed INTEGER NOT NULL, failed INTEGER NOT NULL, stopped INTEGER NOT NULL,
+        PRIMARY KEY (subject, day)
+      );
+      CREATE TABLE IF NOT EXISTS beta_scheduler_lease (
+        id INTEGER PRIMARY KEY CHECK (id = 1), owner TEXT NOT NULL, fence INTEGER NOT NULL, expires_at INTEGER NOT NULL
       );
     `);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const columns = this.db.prepare('PRAGMA table_info(beta_processing_controls)').all() as {
+        name: string;
+      }[];
+      if (!columns.some((column) => column.name === 'scanned_backlog_days')) {
+        this.db.exec(
+          'ALTER TABLE beta_processing_controls ADD COLUMN scanned_backlog_days INTEGER',
+        );
+      }
+      if (!columns.some((column) => column.name === 'generation')) {
+        this.db.exec(
+          'ALTER TABLE beta_processing_controls ADD COLUMN generation INTEGER NOT NULL DEFAULT 0',
+        );
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      this.db.close();
+      throw error;
+    }
   }
 
   close(): void {
@@ -323,27 +362,53 @@ export class BetaAccessStore {
   startProcessing(subject: string, now: number): void {
     checkSubject(subject);
     checkTime(now);
+    this.transaction(() => this.startWithinTransaction(subject, now));
+  }
+
+  /** Re-read configuration and start atomically; do not trust a prior browser preview. */
+  startProcessingWithConfirmation(subject: string, now: number, confirmLive: boolean): void {
+    checkSubject(subject);
+    checkTime(now);
     this.transaction(() => {
       this.activeAccount(subject, now);
-      if (
-        !this.db
-          .prepare('SELECT 1 FROM beta_gmail_tokens WHERE subject = ? AND enabled = 1')
-          .get(subject)
-      ) {
-        throw new AccessDeniedError('Gmail connection not active');
-      }
-      const alreadyRunning = this.processingRequested(subject);
+      const row = this.db
+        .prepare('SELECT yaml FROM beta_user_configs WHERE subject = ?')
+        .get(subject) as { yaml: string } | undefined;
+      if (!row) throw new Error('configuration not initialized');
+      if (!parseConfig(row.yaml).settings.dry_run && !confirmLive)
+        throw new LiveConfirmationRequiredError('live-mode confirmation required');
+      this.startWithinTransaction(subject, now);
+    });
+  }
+
+  private startWithinTransaction(subject: string, now: number): void {
+    this.activeAccount(subject, now);
+    if (
+      !this.db
+        .prepare('SELECT 1 FROM beta_gmail_tokens WHERE subject = ? AND enabled = 1')
+        .get(subject)
+    ) {
+      throw new AccessDeniedError('Gmail connection not active');
+    }
+    const alreadyRunning = this.processingRequested(subject);
+    this.db
+      .prepare(
+        `INSERT INTO beta_processing_controls (subject, running, generation) VALUES (?, 1, 1)
+        ON CONFLICT(subject) DO UPDATE SET running = 1,
+          generation = CASE WHEN beta_processing_controls.running = 0
+            THEN beta_processing_controls.generation + 1 ELSE beta_processing_controls.generation END`,
+      )
+      .run(subject);
+    if (!alreadyRunning) {
       this.db
         .prepare(
-          `INSERT INTO beta_processing_controls (subject, running) VALUES (?, 1)
-        ON CONFLICT(subject) DO UPDATE SET running = 1`,
+          'UPDATE beta_processing_controls SET scanned_backlog_days = NULL WHERE subject = ?',
         )
         .run(subject);
-      if (!alreadyRunning)
-        this.db
-          .prepare('UPDATE beta_worker_leases SET expires_at = 0 WHERE subject = ?')
-          .run(subject);
-    });
+      this.db
+        .prepare('UPDATE beta_worker_leases SET expires_at = 0 WHERE subject = ?')
+        .run(subject);
+    }
   }
 
   /** Safe to call after expiry so the owner can always stop future work. */
@@ -356,7 +421,7 @@ export class BetaAccessStore {
     this.db
       .prepare(
         `INSERT INTO beta_processing_controls (subject, running) VALUES (?, 0)
-        ON CONFLICT(subject) DO UPDATE SET running = 0`,
+        ON CONFLICT(subject) DO UPDATE SET running = 0, scanned_backlog_days = NULL`,
       )
       .run(subject);
     this.db.prepare('UPDATE beta_worker_leases SET expires_at = 0 WHERE subject = ?').run(subject);
@@ -370,18 +435,93 @@ export class BetaAccessStore {
     return row?.running === 1;
   }
 
-  /** Trusted single-scheduler startup only; never expose this operation to users. */
-  resetProcessingOnRestart(): void {
-    this.transaction(() => {
-      this.db.exec('UPDATE beta_processing_controls SET running = 0');
+  /** Trusted scheduler only; never expose this cross-user listing to ordinary users. */
+  runnableUsers(now: number): { subject: string; generation: number }[] {
+    checkTime(now);
+    return this.db
+      .prepare(
+        `SELECT controls.subject, controls.generation FROM beta_processing_controls AS controls
+      JOIN beta_access_requests AS access ON access.subject = controls.subject
+      JOIN beta_gmail_tokens AS tokens ON tokens.subject = controls.subject
+      WHERE controls.running = 1 AND access.status = 'approved' AND access.expires_at > ? AND tokens.enabled = 1
+      ORDER BY controls.subject`,
+      )
+      .all(now) as unknown as { subject: string; generation: number }[];
+  }
+
+  schedulerHeld(lease: SchedulerLease, now: number): boolean {
+    checkTime(now);
+    if (
+      !Number.isSafeInteger(lease.fence) ||
+      lease.fence < 1 ||
+      !/^[A-Za-z0-9_-]{16,128}$/.test(lease.owner)
+    )
+      return false;
+    return !!this.db
+      .prepare(
+        'SELECT 1 FROM beta_scheduler_lease WHERE id = 1 AND owner = ? AND fence = ? AND expires_at > ?',
+      )
+      .get(lease.owner, lease.fence, now);
+  }
+
+  /** Atomically elect one scheduler and reset all processing to stopped on takeover. */
+  acquireScheduler(owner: string, now: number, ttlMs: number): SchedulerLease | null {
+    checkLeaseInput('scheduler', owner, now, ttlMs);
+    return this.transaction(() => {
+      const current = this.db
+        .prepare('SELECT fence, expires_at FROM beta_scheduler_lease WHERE id = 1')
+        .get() as { fence: number; expires_at: number } | undefined;
+      if (current && current.expires_at > now) return null;
+      const fence = (current?.fence ?? 0) + 1;
+      if (!Number.isSafeInteger(fence)) throw new Error('scheduler fence exhausted');
+      this.db
+        .prepare(
+          `INSERT INTO beta_scheduler_lease (id, owner, fence, expires_at) VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET owner = excluded.owner, fence = excluded.fence, expires_at = excluded.expires_at`,
+        )
+        .run(owner, fence, now + ttlMs);
+      this.db.exec('UPDATE beta_processing_controls SET running = 0, scanned_backlog_days = NULL');
       this.db.exec('UPDATE beta_worker_leases SET expires_at = 0');
+      return { owner, fence };
+    });
+  }
+
+  renewScheduler(lease: SchedulerLease, now: number, ttlMs: number): boolean {
+    checkLeaseInput('scheduler', lease.owner, now, ttlMs);
+    if (!Number.isSafeInteger(lease.fence) || lease.fence < 1) return false;
+    const result = this.db
+      .prepare(
+        `UPDATE beta_scheduler_lease SET expires_at = ?
+      WHERE id = 1 AND owner = ? AND fence = ? AND expires_at > ?`,
+      )
+      .run(now + ttlMs, lease.owner, lease.fence, now);
+    return Number(result.changes) === 1;
+  }
+
+  /** A stale scheduler cannot stop or reset the current scheduler's work. */
+  releaseScheduler(lease: SchedulerLease, now: number): void {
+    checkLeaseInput('scheduler', lease.owner, now);
+    if (!Number.isSafeInteger(lease.fence) || lease.fence < 1) return;
+    this.transaction(() => {
+      if (!this.schedulerHeld(lease, now)) return;
+      this.db.exec('UPDATE beta_processing_controls SET running = 0, scanned_backlog_days = NULL');
+      this.db.exec('UPDATE beta_worker_leases SET expires_at = 0');
+      this.db.prepare('UPDATE beta_scheduler_lease SET expires_at = 0 WHERE id = 1').run();
     });
   }
 
   /** Acquire only for an active, connected user; the owner must be a random worker identifier. */
-  acquireLease(subject: string, owner: string, now: number, ttlMs: number): WorkerLease | null {
+  acquireLease(
+    subject: string,
+    owner: string,
+    now: number,
+    ttlMs: number,
+    scheduler?: SchedulerLease,
+  ): WorkerLease | null {
     checkLeaseInput(subject, owner, now, ttlMs);
     return this.transaction(() => {
+      if (scheduler && !this.schedulerHeld(scheduler, now))
+        throw new LeaseLostError('scheduler lease lost');
       this.activeAccount(subject, now);
       if (!this.processingRequested(subject)) throw new AccessDeniedError('processing is stopped');
       if (
@@ -403,7 +543,7 @@ export class BetaAccessStore {
         ON CONFLICT(subject) DO UPDATE SET owner = excluded.owner, fence = excluded.fence, expires_at = excluded.expires_at`,
         )
         .run(subject, owner, fence, now + ttlMs);
-      return { subject, owner, fence };
+      return { subject, owner, fence, ...(scheduler ? { scheduler } : {}) };
     });
   }
 
@@ -412,6 +552,7 @@ export class BetaAccessStore {
     if (!Number.isSafeInteger(lease.fence) || lease.fence < 1) return false;
     return this.transaction(() => {
       if (
+        (lease.scheduler && !this.schedulerHeld(lease.scheduler, now)) ||
         !this.isActive(lease.subject, now) ||
         !this.processingRequested(lease.subject) ||
         !this.db
@@ -445,24 +586,90 @@ export class BetaAccessStore {
     if (!Number.isSafeInteger(lease.fence) || lease.fence < 1)
       throw new LeaseLostError('lease lost');
     this.transaction(() => {
-      const row = this.activeAccount(lease.subject, now);
-      if (!this.processingRequested(lease.subject))
-        throw new AccessDeniedError('processing is stopped');
-      if (
-        !this.db
-          .prepare('SELECT 1 FROM beta_gmail_tokens WHERE subject = ? AND enabled = 1')
-          .get(lease.subject)
-      ) {
-        throw new AccessDeniedError('Gmail connection not active');
-      }
-      const held = this.db
-        .prepare(
-          `SELECT 1 FROM beta_worker_leases
-        WHERE subject = ? AND owner = ? AND fence = ? AND expires_at > ?`,
-        )
-        .get(lease.subject, lease.owner, lease.fence, now);
-      if (!held) throw new LeaseLostError('lease lost');
+      const row = this.leasedAccount(lease, now);
       if (kind === 'message_read') this.countRead(row, lease.subject, now);
+    });
+  }
+
+  private leasedAccount(lease: WorkerLease, now: number): AccountRow {
+    if (lease.scheduler && !this.schedulerHeld(lease.scheduler, now))
+      throw new LeaseLostError('scheduler lease lost');
+    const row = this.activeAccount(lease.subject, now);
+    if (!this.processingRequested(lease.subject))
+      throw new AccessDeniedError('processing is stopped');
+    if (
+      !this.db
+        .prepare('SELECT 1 FROM beta_gmail_tokens WHERE subject = ? AND enabled = 1')
+        .get(lease.subject)
+    ) {
+      throw new AccessDeniedError('Gmail connection not active');
+    }
+    const held = this.db
+      .prepare(
+        `SELECT 1 FROM beta_worker_leases
+      WHERE subject = ? AND owner = ? AND fence = ? AND expires_at > ?`,
+      )
+      .get(lease.subject, lease.owner, lease.fence, now);
+    if (!held) throw new LeaseLostError('lease lost');
+    return row;
+  }
+
+  needsBacklogScan(lease: WorkerLease, days: number, now: number): boolean {
+    checkLeaseInput(lease.subject, lease.owner, now);
+    if (!Number.isSafeInteger(lease.fence) || lease.fence < 1)
+      throw new LeaseLostError('lease lost');
+    if (!Number.isSafeInteger(days) || days < 1 || days > 3650) throw new Error('invalid backlog');
+    return this.transaction(() => {
+      this.leasedAccount(lease, now);
+      const row = this.db
+        .prepare('SELECT scanned_backlog_days FROM beta_processing_controls WHERE subject = ?')
+        .get(lease.subject) as { scanned_backlog_days: number | null };
+      return row.scanned_backlog_days !== days;
+    });
+  }
+
+  completeBacklogScan(lease: WorkerLease, days: number, now: number): void {
+    checkLeaseInput(lease.subject, lease.owner, now);
+    if (!Number.isSafeInteger(lease.fence) || lease.fence < 1)
+      throw new LeaseLostError('lease lost');
+    if (!Number.isSafeInteger(days) || days < 1 || days > 3650) throw new Error('invalid backlog');
+    this.transaction(() => {
+      this.leasedAccount(lease, now);
+      this.db
+        .prepare('UPDATE beta_processing_controls SET scanned_backlog_days = ? WHERE subject = ?')
+        .run(days, lease.subject);
+    });
+  }
+
+  /** Record only aggregate counters while this worker still owns its lease. */
+  recordCycle(lease: WorkerLease, stats: CycleStats, now: number): void {
+    checkLeaseInput(lease.subject, lease.owner, now);
+    if (!Number.isSafeInteger(lease.fence) || lease.fence < 1)
+      throw new LeaseLostError('lease lost');
+    if (
+      ![stats.seen, stats.processed, stats.failed].every(
+        (value) => Number.isSafeInteger(value) && value >= 0,
+      )
+    ) {
+      throw new Error('invalid cycle metrics');
+    }
+    this.transaction(() => {
+      this.leasedAccount(lease, now);
+      this.db
+        .prepare(
+          `INSERT INTO beta_cycle_metrics (subject, day, cycles, seen, processed, failed, stopped)
+        VALUES (?, ?, 1, ?, ?, ?, ?)
+        ON CONFLICT(subject, day) DO UPDATE SET cycles = cycles + 1, seen = seen + excluded.seen,
+          processed = processed + excluded.processed, failed = failed + excluded.failed, stopped = stopped + excluded.stopped`,
+        )
+        .run(
+          lease.subject,
+          new Date(now).toISOString().slice(0, 10),
+          stats.seen,
+          stats.processed,
+          stats.failed,
+          stats.stopped ? 1 : 0,
+        );
     });
   }
 
@@ -483,11 +690,40 @@ export class BetaAccessStore {
     return { day, attempts: usage?.attempts ?? 0, limit: row.daily_limit };
   }
 
+  cycleUsage(
+    actor: string,
+    subject: string,
+    now: number,
+  ): { cycles: number; seen: number; processed: number; failed: number; stopped: number } {
+    this.requireAdmin(actor);
+    checkSubject(subject);
+    checkTime(now);
+    if (!this.account(subject)) throw new Error('request not found');
+    const row = this.db
+      .prepare(
+        `SELECT cycles, seen, processed, failed, stopped FROM beta_cycle_metrics
+      WHERE subject = ? AND day = ?`,
+      )
+      .get(subject, new Date(now).toISOString().slice(0, 10)) as
+      | { cycles: number; seen: number; processed: number; failed: number; stopped: number }
+      | undefined;
+    return row ?? { cycles: 0, seen: 0, processed: 0, failed: 0, stopped: 0 };
+  }
+
   /** Only aggregate counts; no mailbox content, subjects, or sender addresses. */
   metrics(
     actor: string,
     now: number,
-  ): { pending: number; active: number; expired: number; denied: number; readsToday: number } {
+  ): {
+    pending: number;
+    active: number;
+    expired: number;
+    denied: number;
+    readsToday: number;
+    cyclesToday: number;
+    processedToday: number;
+    failedToday: number;
+  } {
     this.requireAdmin(actor);
     checkTime(now);
     const requests = this.db
@@ -507,6 +743,23 @@ export class BetaAccessStore {
     const reads = this.db
       .prepare('SELECT COALESCE(SUM(attempts), 0) AS count FROM beta_read_attempts WHERE day = ?')
       .get(new Date(now).toISOString().slice(0, 10)) as { count: number };
-    return { ...requests, readsToday: reads.count };
+    const cycles = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(cycles), 0) AS cycles,
+      COALESCE(SUM(processed), 0) AS processed, COALESCE(SUM(failed), 0) AS failed
+      FROM beta_cycle_metrics WHERE day = ?`,
+      )
+      .get(new Date(now).toISOString().slice(0, 10)) as {
+      cycles: number;
+      processed: number;
+      failed: number;
+    };
+    return {
+      ...requests,
+      readsToday: reads.count,
+      cyclesToday: cycles.cycles,
+      processedToday: cycles.processed,
+      failedToday: cycles.failed,
+    };
   }
 }

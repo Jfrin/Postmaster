@@ -40,6 +40,9 @@ describe('per-user worker lease foundation', () => {
       const current = second.acquireLease('alice', ownerB, clock, 1000)!;
       expect(current.fence).toBe(2);
       expect(() => oldGuard('other')).toThrow(LeaseLostError);
+      expect(() => first.recordCycle(old, { seen: 1, processed: 1, failed: 0 }, clock)).toThrow(
+        LeaseLostError,
+      );
       expect(first.renewLease(old, clock, 1000)).toBe(false);
       first.releaseLease(old);
       const currentGuard = createLeasedBetaGmailGuard(second, current, () => clock);
@@ -126,6 +129,10 @@ describe('per-user worker lease foundation', () => {
       vault.save('alice', 'synthetic-token');
       access.startProcessing('alice', now);
       const lease = access.acquireLease('alice', ownerA, now, 1000)!;
+      expect(access.needsBacklogScan(lease, 7, now)).toBe(true);
+      access.completeBacklogScan(lease, 7, now);
+      expect(access.needsBacklogScan(lease, 7, now)).toBe(false);
+      expect(access.needsBacklogScan(lease, 3, now)).toBe(true);
       access.deny('admin', 'alice', now + 1);
       access.approve('admin', 'alice', now + 10_000, 100, now + 2);
       expect(access.processingRequested('alice')).toBe(false);
@@ -133,8 +140,10 @@ describe('per-user worker lease foundation', () => {
         AccessDeniedError,
       );
       access.startProcessing('alice', now + 2);
-      expect(access.acquireLease('alice', ownerB, now + 2, 1000)?.fence).toBe(2);
-      access.resetProcessingOnRestart();
+      const second = access.acquireLease('alice', ownerB, now + 2, 1000)!;
+      expect(second.fence).toBe(2);
+      expect(access.needsBacklogScan(second, 7, now + 2)).toBe(true);
+      expect(access.acquireScheduler(ownerA, now + 3, 1000)).not.toBeNull();
       expect(access.processingRequested('alice')).toBe(false);
       expect(() => access.acquireLease('alice', ownerA, now + 3, 1000)).toThrow(AccessDeniedError);
       access.startProcessing('alice', now + 3);

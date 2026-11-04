@@ -32,6 +32,10 @@ export class GmailConsentFlow {
     return this.vault.has(subject);
   }
 
+  isReady(subject: string): boolean {
+    return this.vault.isEnabled(subject);
+  }
+
   async finish(
     subject: string,
     state: string,

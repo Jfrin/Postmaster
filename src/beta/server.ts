@@ -2,13 +2,18 @@ import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { z } from 'zod';
 import { ConfigSchema } from '../config.js';
-import { AccessDeniedError, type BetaAccessStore } from './access.js';
+import {
+  AccessDeniedError,
+  LiveConfirmationRequiredError,
+  type BetaAccessStore,
+} from './access.js';
+import type { BetaActivityStore } from './activity.js';
 import type { GmailConsentFlow } from './gmail-consent-flow.js';
 import { GmailConsentStateStore } from './gmail-consent-state.js';
 import type { IdentityFlow } from './identity-flow.js';
 import { IdentityLoginStateStore } from './oauth-state.js';
 import { BETA_PAGE } from './page.js';
-import type { BetaUserConfigStore } from './user-config.js';
+import { ConfigLiveConfirmationError, type BetaUserConfigStore } from './user-config.js';
 
 /** A trusted server-side session adapter must supply these from a verified Google identity. */
 export interface BetaSession {
@@ -27,6 +32,9 @@ export interface BetaServerOptions {
   /** Only enable after Gmail policy, key management and isolation checks are complete. */
   gmailConsentFlow?: GmailConsentFlow;
   userConfigStore?: BetaUserConfigStore;
+  activityStore?: BetaActivityStore;
+  /** Must reflect the trusted scheduler's actual online status. */
+  processingOnline?: () => boolean;
   now?: () => number;
 }
 
@@ -44,6 +52,7 @@ const Approval = z
   .strict();
 const Denial = z.object({ subject: Subject }).strict();
 const Request = z.object({}).strict();
+const Start = z.object({ confirmLive: z.boolean().optional() }).strict();
 class RequestTooLargeError extends Error {}
 class SessionExpiredError extends Error {}
 
@@ -207,7 +216,11 @@ async function handle(
       request: request && { ...request, active: store.isActive(session.subject, now) },
       gmailAvailable: !!options.gmailConsentFlow,
       gmailConnected: options.gmailConsentFlow?.isConnected(session.subject) ?? false,
+      gmailReady: options.gmailConsentFlow?.isReady(session.subject) ?? false,
       configAvailable: !!options.userConfigStore,
+      activityAvailable: !!options.activityStore,
+      processingOnline: options.processingOnline?.() ?? false,
+      processingRequested: store.processingRequested(session.subject),
     });
   }
   if (method === 'POST' && url.pathname === '/api/access/request') {
@@ -225,8 +238,36 @@ async function handle(
     return send(
       res,
       200,
-      options.userConfigStore.save(session.subject, input.data, options.now?.() ?? Date.now()),
+      options.userConfigStore.save(
+        session.subject,
+        input.data,
+        options.now?.() ?? Date.now(),
+        req.headers['x-confirm-live'] === 'yes',
+      ),
     );
+  }
+  if (method === 'GET' && url.pathname === '/api/activity' && options.activityStore) {
+    return send(res, 200, options.activityStore.recent(session.subject, now));
+  }
+  if (method === 'POST' && url.pathname === '/api/processing/start' && options.processingOnline) {
+    const input = Start.safeParse(await readAuthorizedJson(options, req, session));
+    if (!input.success) return send(res, 400, { error: 'invalid request' });
+    if (!options.processingOnline() || !options.userConfigStore)
+      return send(res, 503, { error: 'processing unavailable' });
+    const time = options.now?.() ?? Date.now();
+    options.userConfigStore.get(session.subject, time);
+    store.startProcessingWithConfirmation(
+      session.subject,
+      options.now?.() ?? Date.now(),
+      input.data.confirmLive === true,
+    );
+    return send(res, 200, { ok: true });
+  }
+  if (method === 'POST' && url.pathname === '/api/processing/stop' && options.processingOnline) {
+    if (!Request.safeParse(await readAuthorizedJson(options, req, session)).success)
+      return send(res, 400, { error: 'invalid request' });
+    store.stopProcessing(session.subject);
+    return send(res, 200, { ok: true });
   }
   if (method === 'POST' && url.pathname === '/api/gmail/connect' && options.gmailConsentFlow) {
     if (!Request.safeParse(await readAuthorizedJson(options, req, session)).success)
@@ -252,6 +293,7 @@ async function handle(
       ...r,
       active: store.isActive(r.subject, now),
       attempts: store.readUsage(session.subject, r.subject, now).attempts,
+      cycleUsage: store.cycleUsage(session.subject, r.subject, now),
     }));
     return send(res, 200, requests);
   }
@@ -288,6 +330,11 @@ export function createBetaServer(options: BetaServerOptions): Server {
   return createServer((req, res) => {
     handle(options, req, res).catch((error: unknown) => {
       if (error instanceof AccessDeniedError) return send(res, 403, { error: 'forbidden' });
+      if (
+        error instanceof LiveConfirmationRequiredError ||
+        error instanceof ConfigLiveConfirmationError
+      )
+        return send(res, 409, { error: 'live-mode confirmation required' });
       if (error instanceof SessionExpiredError)
         return send(res, 401, { error: 'authentication required' });
       if (error instanceof RequestTooLargeError)
