@@ -10,6 +10,10 @@ export { extractBody } from './gmail-message.js';
 
 export const SCOPES = ['https://www.googleapis.com/auth/gmail.modify'];
 
+export type GmailRequestKind = 'message_read' | 'other';
+/** Invoked immediately before each Gmail API attempt, after the quota queue admits it. */
+export type GmailRequestGuard = (kind: GmailRequestKind) => void;
+
 export function oauthClientFromSecrets(secretsDir: string): OAuth2Client {
   const creds = JSON.parse(readFileSync(join(secretsDir, 'credentials.json'), 'utf8'));
   const c = creds.installed ?? creds.web;
@@ -31,14 +35,24 @@ export function oauthClientFromSecrets(secretsDir: string): OAuth2Client {
 export class GmailClient implements MailClient {
   private readonly quota = new GmailQuota();
   /** Takes the Gmail service so tests can pass a mock. */
-  constructor(private readonly gmail: gmail_v1.Gmail) {}
+  constructor(
+    private readonly gmail: gmail_v1.Gmail,
+    private readonly guard?: GmailRequestGuard,
+  ) {}
 
-  static fromAuth(auth: OAuth2Client): GmailClient {
-    return new GmailClient(gmailApi({ version: 'v1', auth }));
+  static fromAuth(auth: OAuth2Client, guard?: GmailRequestGuard): GmailClient {
+    return new GmailClient(gmailApi({ version: 'v1', auth }), guard);
+  }
+
+  private request<T>(units: number, kind: GmailRequestKind, request: () => Promise<T>): Promise<T> {
+    return this.quota.run(units, () => {
+      this.guard?.(kind);
+      return request();
+    });
   }
 
   async ensureLabels(names: string[], create: boolean): Promise<Map<string, string>> {
-    const res = await this.quota.run(1, () =>
+    const res = await this.request(1, 'other', () =>
       this.gmail.users.labels.list({ userId: 'me' }, { retry: false }),
     );
     const byName = new Map<string, string>();
@@ -47,7 +61,7 @@ export class GmailClient implements MailClient {
     for (const name of names) {
       let id = byName.get(name);
       if (!id && create) {
-        const made = await this.quota.run(5, () =>
+        const made = await this.request(5, 'other', () =>
           this.gmail.users.labels.create(
             {
               userId: 'me',
@@ -68,7 +82,7 @@ export class GmailClient implements MailClient {
   }
 
   async listNew(cursor: string | null, backlogDays: number) {
-    const profile = await this.quota.run(1, () =>
+    const profile = await this.request(1, 'other', () =>
       this.gmail.users.getProfile({ userId: 'me' }, { retry: false }),
     );
     const newCursor = profile.data.historyId ?? cursor ?? '';
@@ -89,7 +103,7 @@ export class GmailClient implements MailClient {
     const ids = new Set<string>();
     let pageToken: string | undefined;
     do {
-      const res = await this.quota.run(2, () =>
+      const res = await this.request(2, 'other', () =>
         this.gmail.users.history.list(
           {
             userId: 'me',
@@ -115,7 +129,7 @@ export class GmailClient implements MailClient {
     const ids: string[] = [];
     let pageToken: string | undefined;
     do {
-      const res = await this.quota.run(5, () =>
+      const res = await this.request(5, 'other', () =>
         this.gmail.users.messages.list(
           {
             userId: 'me',
@@ -133,7 +147,7 @@ export class GmailClient implements MailClient {
   }
 
   async fetchMessage(id: string, maxBodyChars: number): Promise<EmailMessage> {
-    const res = await this.quota.run(60, () =>
+    const res = await this.request(60, 'message_read', () =>
       this.gmail.users.messages.get({ userId: 'me', id, format: 'full' }, { retry: false }),
     );
     return parseGmailMessage(id, res.data, maxBodyChars);
@@ -141,7 +155,7 @@ export class GmailClient implements MailClient {
 
   async modify(id: string, change: ModifyRequest): Promise<void> {
     if (!change.add.length && !change.remove.length) return;
-    await this.quota.run(5, () =>
+    await this.request(5, 'other', () =>
       this.gmail.users.messages.modify(
         {
           userId: 'me',

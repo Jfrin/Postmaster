@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import vm from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { loadConfigFile } from '../src/config.js';
 import { createDemoServer } from '../src/demo/server.js';
 
@@ -18,6 +20,21 @@ beforeEach(async () => {
 afterEach(() => new Promise<void>((resolve) => server.close(() => resolve())));
 
 describe('isolated mock demo', () => {
+  it('reserves distinct proxy addresses and trusts only Caddy', () => {
+    const compose = parse(readFileSync('docker-compose.demo.yml', 'utf8')) as {
+      services: {
+        auth: { command: string[]; networks: { edge: { ipv4_address: string } }; ports?: unknown };
+        caddy: { networks: { edge: { ipv4_address: string } } };
+        demo: { ports?: unknown };
+      };
+    };
+    const { auth, caddy, demo } = compose.services;
+    expect(auth.networks.edge.ipv4_address).not.toBe(caddy.networks.edge.ipv4_address);
+    expect(auth.command).toContain(`--trusted-proxy-ip=${caddy.networks.edge.ipv4_address}/32`);
+    expect(auth.ports).toBeUndefined();
+    expect(demo.ports).toBeUndefined();
+  });
+
   it('serves a synthetic-only page with valid script', async () => {
     const html = await (await fetch(base)).text();
     expect(html).toContain('No Gmail connection');

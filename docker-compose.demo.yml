@@ -34,7 +34,8 @@ services:
       - ./secrets/demo-allowed-emails:/etc/oauth2-proxy/allowed-emails:ro
     restart: unless-stopped
     networks:
-      edge: {}
+      edge:
+        ipv4_address: 172.30.88.3
       backend: {}
 
   caddy:
