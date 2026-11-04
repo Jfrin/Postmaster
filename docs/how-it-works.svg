@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 170" role="img" aria-labelledby="title desc">
+  <title id="title">How Postmaster works</title>
+  <desc id="desc">Inbox messages are checked against rules and the sender cache. Unmatched messages go to Azure OpenAI. A validated category determines whether a dry run records a decision or live mode applies Gmail actions, and activity appears in the dashboard.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L8 4 L0 8 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+  <rect width="940" height="170" rx="14" fill="#f8fafc"/>
+  <g fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)">
+    <path d="M112 82 H139"/>
+    <path d="M275 82 H491"/>
+    <path d="M207 106 V132 H309"/>
+    <path d="M445 132 H550 V107"/>
+    <path d="M610 82 H642"/>
+    <path d="M788 82 H820"/>
+  </g>
+  <g font-family="system-ui, -apple-system, Segoe UI, sans-serif" text-anchor="middle">
+    <g fill="#fff" stroke="#cbd5e1" stroke-width="1.5">
+      <rect x="12" y="58" width="100" height="48" rx="10"/>
+      <rect x="141" y="58" width="134" height="48" rx="10"/>
+      <rect x="311" y="111" width="134" height="42" rx="10"/>
+      <rect x="493" y="58" width="117" height="48" rx="10"/>
+      <rect x="644" y="51" width="144" height="62" rx="10"/>
+      <rect x="822" y="58" width="106" height="48" rx="10"/>
+    </g>
+    <g fill="#0f172a" font-size="13" font-weight="600">
+      <text x="62" y="87">Gmail inbox</text>
+      <text x="208" y="79">Rules +</text><text x="208" y="96">sender cache</text>
+      <text x="378" y="137">Azure OpenAI</text>
+      <text x="551" y="79">Validated</text><text x="551" y="96">category</text>
+      <text x="716" y="73">Dry run: record</text><text x="716" y="94">Live: apply actions</text>
+      <text x="875" y="79">Dashboard</text><text x="875" y="96">activity</text>
+    </g>
+    <g fill="#475569" font-size="11">
+      <text x="382" y="72">match</text>
+      <text x="254" y="126">no match</text>
+    </g>
+  </g>
+</svg>

@@ -33,9 +33,9 @@ The hosted service is experimental. Approval, separate Gmail consent, configurat
 
 ## How it works
 
-**Inbox → rules → sender cache → Azure OpenAI → category → dashboard**
+![Postmaster workflow: inbox, rules and cache, optional Azure OpenAI classification, category, dry run or live actions, and dashboard activity](docs/how-it-works.svg)
 
-Rules and cached senders skip the model; uncertain results use a fallback. Dry run records decisions without changing Gmail. In live mode, configured labels and actions are applied.
+Rules and cached senders skip the model; uncertain results use a fallback. Dry run records decisions without changing Gmail.
 
 Azure content-filter blocks are filed separately under **AI/Content Filtered** (with your configured label prefix), without archiving or marking the message read. These decisions are treated as processed, not automatically retried. Other Azure errors remain retryable. The ID `content_filtered` and label `Content Filtered` are reserved for this built-in outcome.
 
