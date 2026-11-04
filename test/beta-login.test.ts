@@ -70,7 +70,7 @@ describe('identity login integration with a simulated Google provider', () => {
     try {
       const landing = await send(base, '/');
       expect(landing.status).toBe(200);
-      for (const href of ['/beta/apply', '/beta', '/demo', '/privacy'])
+      for (const href of ['/beta/apply', '/beta', '/demo', '/privacy', '/terms'])
         expect(landing.body).toContain(`href="${href}"`);
       expect(landing.body).not.toContain('/beta/admin');
       const privacy = await send(base, '/privacy');
@@ -80,12 +80,21 @@ describe('identity login integration with a simulated Google provider', () => {
       expect(privacy.body).toContain('Jose Andres Ofrin');
       expect(privacy.body).toContain('Azure OpenAI');
       expect(privacy.body).toContain('does not revoke access at Google');
+      expect(privacy.body).toContain('href="/terms"');
+      const terms = await send(base, '/terms');
+      expect(terms.status).toBe(200);
+      expect(terms.headers['content-type']).toContain('text/html');
+      expect(terms.body).toContain('Postmaster terms of service');
+      expect(terms.body).toContain('Jose Andres Ofrin');
+      expect(terms.body).toContain('Philippines');
+      expect(terms.body).toContain('href="/privacy"');
       const login = await send(base, '/beta');
       expect(login.status).toBe(200);
       expect(login.body).toContain('href="/beta/auth/google/start"');
       expect(login.body).toContain('href="/privacy"');
+      expect(login.body).toContain('href="/terms"');
       expect((await send(base, '/beta/apply')).body).toContain('href="/privacy"');
-      expect((await send(base, '/terms')).status).toBe(404);
+      expect((await send(base, '/beta/apply')).body).toContain('href="/terms"');
       const admin = await send(base, '/beta/admin');
       expect(admin.status).toBe(401);
       expect(admin.headers['content-type']).toContain('text/html');

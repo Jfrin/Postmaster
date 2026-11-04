@@ -1,6 +1,6 @@
 # Draft privacy policy and terms
 
-**Drafts, not legal advice.** The owner approved publishing the privacy policy; the terms remain for owner review and are not published. Check the documents against the actual service, Google requirements and applicable Philippine law. They do not establish Google verification or policy compliance. The served privacy policy is maintained in `src/beta/privacy-page.ts`.
+**Drafts, not legal advice.** The owner approved publishing both documents. Check them against the actual service, Google requirements and applicable Philippine law. They do not establish Google verification or policy compliance. The served pages are maintained in `src/beta/privacy-page.ts` and `src/beta/terms-page.ts`.
 
 ---
 

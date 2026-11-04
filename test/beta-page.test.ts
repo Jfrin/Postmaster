@@ -122,6 +122,7 @@ describe('beta dashboard', () => {
     expect(elements.setup!.hidden).toBe(true);
     expect(BETA_PAGE).toContain('href="/">Home</a>');
     expect(BETA_PAGE).toContain('href="/privacy">Privacy</a>');
+    expect(BETA_PAGE).toContain('href="/terms">Terms</a>');
     const account = elements.tabs!.children.find((child) => child.text() === 'Account');
     expect(account).toBeDefined();
     account!.listeners.click!();

@@ -2,7 +2,7 @@
 export const PRIVACY_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Postmaster privacy policy</title><style>body{font:16px/1.6 system-ui,sans-serif;max-width:48rem;margin:5vh auto;padding:1.5rem}a{color:inherit}h2{margin-top:2rem}</style></head><body><main>
-<p><a href="/">Home</a></p><h1>Postmaster privacy policy</h1>
+<p><a href="/">Home</a> · <a href="/terms">Terms of service</a></p><h1>Postmaster privacy policy</h1>
 <p>Postmaster is a closed-beta email organization service operated by Jose Andres Ofrin in the Philippines. Questions or privacy requests can be sent to <a href="mailto:joseofrin@gmail.com">joseofrin@gmail.com</a>.</p>
 <h2>Information Postmaster uses</h2><ul>
 <li><strong>Applications and sign-in:</strong> The beta application collects the email address you submit. Google sign-in provides a verified email address and Google account identifier to identify you and control access. Sign-in uses Google identity permissions, including profile scope; signing in alone does not connect Gmail.</li>

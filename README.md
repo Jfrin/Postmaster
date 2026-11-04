@@ -2,6 +2,8 @@
 
 **An AI-assisted Gmail organizer built for control, resilience, and safe automation.**
 
+[Visit Postmaster](https://postmaster-demo.japaneast.cloudapp.azure.com/) — explore the synthetic demo or apply for the closed beta.
+
 Postmaster classifies incoming email using configurable rules, a learned sender cache, and Azure OpenAI. It applies Gmail labels and optional actions based on the result, with a local dashboard for reviewing decisions and managing the pipeline.
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white)

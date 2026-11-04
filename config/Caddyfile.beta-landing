@@ -1,6 +1,6 @@
 # Combined beta and authenticated synthetic demo; OAuth callbacks stay at their registered paths.
 {$DEMO_HOST} {
-	@beta path / /privacy /beta /beta/* /auth/google/callback /auth/google/gmail/callback
+	@beta path / /privacy /terms /beta /beta/* /auth/google/callback /auth/google/gmail/callback
 	handle @beta {
 		reverse_proxy postmaster-beta:8081
 	}

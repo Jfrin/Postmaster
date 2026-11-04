@@ -20,6 +20,7 @@ import { BETA_PAGE } from './page.js';
 import { BETA_ADMIN_PAGE } from './admin-page.js';
 import { BETA_INTAKE_PAGE } from './intake-page.js';
 import { PRIVACY_PAGE } from './privacy-page.js';
+import { TERMS_PAGE } from './terms-page.js';
 import { adminAccessPage, LANDING_PAGE, signInPage } from './welcome-page.js';
 import type { BetaProcessingEvents } from './processing-events.js';
 import { ConfigLiveConfirmationError, type BetaUserConfigStore } from './user-config.js';
@@ -134,6 +135,7 @@ async function handle(
   const basePath = options.basePath ?? '';
   let path = url.pathname;
   if (method === 'GET' && path === '/privacy') return send(res, 200, PRIVACY_PAGE, true);
+  if (method === 'GET' && path === '/terms') return send(res, 200, TERMS_PAGE, true);
   if (basePath && method === 'GET' && path === '/') return send(res, 200, LANDING_PAGE, true);
   if (basePath) {
     if (path === basePath) path = '/';
