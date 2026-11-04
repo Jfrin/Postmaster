@@ -33,29 +33,9 @@ The hosted service is experimental. Approval, separate Gmail consent, configurat
 
 ## How it works
 
-```mermaid
-flowchart TD
-    A([Start]) --> B[Find new inbox messages]
-    B --> C{Matching rule?}
-    C -- Yes --> F[Choose category]
-    C -- No --> D{Eligible sender cache?}
-    D -- Yes --> F
-    D -- No --> E[Classify with Azure OpenAI]
-    E --> G[Validate result and confidence]
-    G --> F
-    F --> H{Dry run?}
-    H -- Yes --> I[Record decision only]
-    H -- No --> J[Apply configured Gmail actions]
-    J --> K[Record decision]
-    I --> L[Review activity in dashboard]
-    K --> L
-```
+**Inbox → rules → sender cache → Azure OpenAI → category → dashboard**
 
-1. **Discover:** scan the configured inbox lookback, then use Gmail history to find new messages.
-2. **Classify:** check rules first, then the sender cache. Only messages without a match need the model.
-3. **Decide:** validate the model's category and confidence; use a fallback when the result is uncertain or invalid.
-4. **Act:** dry run records decisions without changing Gmail. In confirmed live mode, apply the category's configured labels and actions.
-5. **Review:** inspect decisions and processing activity in the dashboard while Postmaster continues checking for new mail.
+Rules and cached senders skip the model; uncertain results use a fallback. Dry run records decisions without changing Gmail. In live mode, configured labels and actions are applied.
 
 Azure content-filter blocks are filed separately under **AI/Content Filtered** (with your configured label prefix), without archiving or marking the message read. These decisions are treated as processed, not automatically retried. Other Azure errors remain retryable. The ID `content_filtered` and label `Content Filtered` are reserved for this built-in outcome.
 
