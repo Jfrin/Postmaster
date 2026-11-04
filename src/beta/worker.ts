@@ -14,7 +14,12 @@ import {
 } from './access.js';
 import { createLeasedBetaGmailGuard } from './gmail-guard.js';
 import { BetaGmailOAuthClient } from './gmail-oauth-client.js';
-import { BetaProcessingEvents, safeHttpStatus, type ProcessingEvent } from './processing-events.js';
+import {
+  BetaProcessingEvents,
+  safeFailureEvent,
+  safeHttpStatus,
+  type ProcessingEvent,
+} from './processing-events.js';
 import { createBetaStateWriteGuard } from './state-guard.js';
 import { GmailTokenVault } from './token-vault.js';
 import { BetaUserConfigStore } from './user-config.js';
@@ -188,6 +193,10 @@ export class BetaCycleRunner {
         now: this.now,
         hooks: {
           onStage: (stage) => event(stage),
+          onProgress: (done, total) => {
+            if (done === 1 || done % 10 === 0 || done === total)
+              event('cycle_progress', { seen: total, processed: done });
+          },
           shouldStop: () => {
             if (lost || limitReached) return true;
             try {
@@ -229,7 +238,7 @@ export class BetaCycleRunner {
         limitReached,
       };
     } catch (error) {
-      event('cycle_failed', { status: safeHttpStatus(error) });
+      event(safeFailureEvent(error), { status: safeHttpStatus(error) });
       throw error;
     } finally {
       clearInterval(timer);

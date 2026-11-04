@@ -3,9 +3,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AccessDeniedError, BetaAccessStore } from '../src/beta/access.js';
-import { BetaProcessingEvents, safeHttpStatus } from '../src/beta/processing-events.js';
+import {
+  BetaProcessingEvents,
+  safeFailureEvent,
+  safeHttpStatus,
+} from '../src/beta/processing-events.js';
 
 describe('beta processing events', () => {
+  it('maps only known 403 reasons to fixed event labels', () => {
+    const error = (reason: unknown, status = 403) => ({
+      response: { status, data: { error: { errors: [{ reason }], details: [{ reason }] } } },
+    });
+    expect(safeFailureEvent(error('SERVICE_DISABLED'))).toBe('cycle_failed_api_disabled');
+    expect(safeFailureEvent(error('accessNotConfigured'))).toBe('cycle_failed_api_disabled');
+    expect(safeFailureEvent(error('ACCESS_TOKEN_SCOPE_INSUFFICIENT'))).toBe(
+      'cycle_failed_insufficient_permission',
+    );
+    expect(safeFailureEvent(error('insufficientPermissions'))).toBe(
+      'cycle_failed_insufficient_permission',
+    );
+    expect(safeFailureEvent(error('rateLimitExceeded'))).toBe('cycle_failed_quota');
+    expect(safeFailureEvent(error('secret provider text'))).toBe('cycle_failed');
+    expect(safeFailureEvent(error('SERVICE_DISABLED', 500))).toBe('cycle_failed');
+    expect(safeFailureEvent({ response: { status: 403, data: 'sensitive' } })).toBe('cycle_failed');
+  });
   it('keeps bounded, sanitized events isolated to actively approved users', () => {
     const dir = mkdtempSync(join(tmpdir(), 'postmaster-events-'));
     const path = join(dir, 'beta.db');

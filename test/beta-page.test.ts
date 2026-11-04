@@ -57,7 +57,11 @@ describe('beta dashboard', () => {
       '/beta/api/activity': [
         { created_at: '2026-11-04T10:00:00Z', subject: '<img>', category: 'work', confidence: 1 },
       ],
-      '/beta/api/processing/events': [{ occurred_at: 1, event: 'cycle_failed', status: 403 }],
+      '/beta/api/processing/events': [
+        { occurred_at: 3, event: 'cycle_failed', status: 403 },
+        { occurred_at: 2, event: 'cycle_progress', seen: 10, processed: 1 },
+        { occurred_at: 1, event: 'cycle_started' },
+      ],
       '/beta/api/admin/metrics': {},
       '/beta/api/admin/requests': [],
     };
@@ -82,6 +86,13 @@ describe('beta dashboard', () => {
     vm.runInContext(script, context);
     await new Promise((resolve) => setImmediate(resolve));
     expect(elements.main!.text()).toContain('Scan failed (HTTP 403)');
+    expect(elements.main!.text()).toContain(
+      'Checked 1 / 10 messages (includes skipped and failed)',
+    );
+    expect(elements.main!.text().indexOf('Scan started')).toBeLessThan(
+      elements.main!.text().indexOf('Scan failed'),
+    );
+    expect(elements.main!.text()).toContain('ERROR');
     expect(elements.main!.text()).toContain('<img>');
     expect(elements.tabs!.text()).toContain('Admin');
     const admin = elements.tabs!.children.find((child) => child.text() === 'Admin');

@@ -13,8 +13,12 @@ export type ProcessingEvent =
   | 'checking_labels'
   | 'listing_inbox'
   | 'processing_messages'
+  | 'cycle_progress'
   | 'cycle_completed'
   | 'cycle_stopped'
+  | 'cycle_failed_api_disabled'
+  | 'cycle_failed_insufficient_permission'
+  | 'cycle_failed_quota'
   | 'cycle_failed';
 
 /** A bounded, per-user event trail containing no message contents or provider errors. */
@@ -50,8 +54,12 @@ export class BetaProcessingEvents {
       'checking_labels',
       'listing_inbox',
       'processing_messages',
+      'cycle_progress',
       'cycle_completed',
       'cycle_stopped',
+      'cycle_failed_api_disabled',
+      'cycle_failed_insufficient_permission',
+      'cycle_failed_quota',
       'cycle_failed',
     ];
     if (!allowed.includes(event)) throw new Error('invalid processing event');
@@ -121,4 +129,42 @@ export function safeHttpStatus(error: unknown): number | undefined {
       return value;
   }
   return undefined;
+}
+
+/** Map known Google reason codes to fixed labels; never retain provider-supplied text. */
+export function safeFailureEvent(error: unknown): ProcessingEvent {
+  if (safeHttpStatus(error) !== 403 || !error || typeof error !== 'object') return 'cycle_failed';
+  const response = (error as { response?: { data?: unknown } }).response;
+  const data = response?.data;
+  if (!data || typeof data !== 'object') return 'cycle_failed';
+  const providerError = (data as { error?: unknown }).error;
+  if (!providerError || typeof providerError !== 'object') return 'cycle_failed';
+  const fields = providerError as { errors?: unknown; details?: unknown };
+  const reasons: unknown[] = [];
+  for (const items of [fields.errors, fields.details]) {
+    if (!Array.isArray(items)) continue;
+    for (const item of items) {
+      if (item && typeof item === 'object') reasons.push((item as { reason?: unknown }).reason);
+    }
+  }
+  if (reasons.some((r) => r === 'SERVICE_DISABLED' || r === 'accessNotConfigured'))
+    return 'cycle_failed_api_disabled';
+  if (
+    reasons.some((r) => r === 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' || r === 'insufficientPermissions')
+  )
+    return 'cycle_failed_insufficient_permission';
+  if (
+    reasons.some((r) =>
+      [
+        'RATE_LIMIT_EXCEEDED',
+        'RESOURCE_EXHAUSTED',
+        'dailyLimitExceeded',
+        'userRateLimitExceeded',
+        'rateLimitExceeded',
+        'quotaExceeded',
+      ].includes(r as string),
+    )
+  )
+    return 'cycle_failed_quota';
+  return 'cycle_failed';
 }
