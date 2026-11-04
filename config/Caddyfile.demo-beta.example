@@ -1,0 +1,10 @@
+# Example only. Review and validate before changing the VM's existing demo routing.
+{$DEMO_HOST} {
+	@beta path /beta /beta/* /auth/google/callback /auth/google/gmail/callback
+	handle @beta {
+		reverse_proxy postmaster-beta:8081
+	}
+	handle {
+		reverse_proxy auth:4180
+	}
+}

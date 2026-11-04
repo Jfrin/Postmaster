@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { BetaAccessStore } from '../src/beta/access.js';
+import { GmailConsentStateStore } from '../src/beta/gmail-consent-state.js';
 import {
   deleteExpiredGmailTokens,
   EXPIRED_TOKEN_RETENTION_MS,
@@ -55,6 +56,39 @@ describe('expired token retention foundation', () => {
       expect(deleteExpiredGmailTokens(path, reapproval + 1)).toBe(0);
       expect(vault.load('user')).toBe('synthetic-refresh-token');
     } finally {
+      vault.close();
+      access.close();
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it('does not delete a new pending connection using a previous approval expiry', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'postmaster-retention-'));
+    const path = join(dir, 'beta.db');
+    const access = new BetaAccessStore(path);
+    const vault = new GmailTokenVault(path, randomBytes(32));
+    const states = new GmailConsentStateStore(path);
+    try {
+      access.bootstrapAdmin('admin');
+      access.requestAccess('user', 'test@example.com', now);
+      const expiry = now + 1000;
+      access.approve('admin', 'user', expiry, 100, now);
+      vault.save('user', 'old-token');
+      access.requestAccess('user', 'test@example.com', expiry);
+      const reconnection = expiry + EXPIRED_TOKEN_RETENTION_MS;
+      const consent = states.start('user', reconnection, true);
+      const pending = states.consume(
+        consent.state,
+        consent.cookie.split(';')[0],
+        'user',
+        reconnection,
+      )!;
+      vault.saveIfPendingOrActive('user', 'new-token', reconnection, pending.generation);
+      expect(deleteExpiredGmailTokens(path, reconnection)).toBe(0);
+      expect(vault.load('user')).toBe('new-token');
+      expect(access.ownRequest('user')?.expiresAt).toBeNull();
+    } finally {
+      states.close();
       vault.close();
       access.close();
       rmSync(dir, { recursive: true });

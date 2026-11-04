@@ -5,6 +5,7 @@ import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import type { GmailRequestKind } from '../gmail.js';
 import { parseConfig } from '../config.js';
 import type { CycleStats } from '../pipeline.js';
+import { initConsentFence, invalidateConsent } from './consent-fence.js';
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   DatabaseSync: typeof DatabaseSyncType;
@@ -82,6 +83,7 @@ export class BetaAccessStore {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA busy_timeout = 5000');
+    initConsentFence(this.db);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS beta_admins (subject TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS beta_access_requests (
@@ -201,6 +203,7 @@ export class BetaAccessStore {
       `,
         )
         .run(subject, verifiedEmail, now, DEFAULT_DAILY_READ_LIMIT);
+      if (row?.status !== 'pending') invalidateConsent(this.db, subject);
       this.stopWithinTransaction(subject);
     });
   }
@@ -282,6 +285,7 @@ export class BetaAccessStore {
       this.db
         .prepare("UPDATE beta_access_requests SET status = 'denied' WHERE subject = ?")
         .run(subject);
+      invalidateConsent(this.db, subject);
       this.stopWithinTransaction(subject);
       this.audit(actor, subject, 'denied', now, null, null);
     });

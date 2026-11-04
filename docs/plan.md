@@ -56,7 +56,7 @@ Checked items exist in the **single-user app** unless explicitly labeled beta. T
 
 - [x] Added lint, formatting, typechecking, configuration validation, builds, offline tests, coverage, synthetic evaluation and GitHub CI with dependency and secret scanning.
 - [x] Ran a synthetic Azure model smoke test and a Gmail profile-only authorization check. Neither is a real multi-user beta end-to-end test.
-- [x] A previous committed revision passed GitHub CI. Subsequent local changes are uncommitted and have not been verified by GitHub CI.
+- [x] The owner pushed the beta prototype; local `main` matches `origin/main` at commit `73c4369`. Newer local fixes remain uncommitted and have not been verified by GitHub CI.
 
 ### VM demo and Google setup
 
@@ -69,16 +69,25 @@ Checked items exist in the **single-user app** unless explicitly labeled beta. T
 
 - [x] The local beta prototype supports sign-in, consent before approval, admin approval/denial, per-user settings, activity, quotas, Start/Stop and confirmation-gated live actions. Pending tokens are encrypted and workers cannot load them without active approval.
 - [x] Added per-user workers, scheduler and worker leases, transactional state-write fencing, access expiry and a seven-day expired-token cleanup primitive. Cleanup is not scheduled in production.
-- [x] Synthetic tests cover two-user isolation, no processing before approval and Start, quotas, scheduler fencing and simulated live Gmail modifications. The last full local CI passed **212 tests**, lint, formatting, typecheck, config check and build. This is not a real-Google test.
-- [x] A local Azure Key Vault adapter using managed identity and a pinned secret version is tested with fake responses. No real vault access or recovery has been tested.
+- [x] Synthetic tests cover two-user isolation, no processing before approval and Start, quotas, scheduler fencing and simulated live Gmail modifications. Local CI passed **219 tests**, lint, formatting, typecheck, config check and build. This is not a real-Google test.
+- [x] A local Azure Key Vault adapter using managed identity and a pinned secret version is tested with fake responses. The VM can retrieve the pinned key, but the adapter has not been tested against the real vault and recovery is untested.
+- [x] Added local beta startup wiring and tests for separate Google projects and callbacks, operator-provided admin subject, managed key, loopback binding and stopped-by-default scheduling. This is uncommitted, not deployed and not yet production-reviewed.
+- [x] Added local consent-generation fences for denial/re-request, forget, disconnect and overlapping consent; block reconnect during revocation, and stop processing atomically when connections change. Synthetic tests cover these races. Crash recovery, abandoned Google grants and real-provider behavior remain unresolved.
+- [x] Drafted a separate beta Compose file and Caddy routing example without modifying the VM demo configuration. The Caddy example validates on the VM, and a temporary container on the demo edge network can retrieve the pinned vault key. Routing and the actual beta deployment are not yet tested end to end.
+- [x] Verified that the VM's managed identity token endpoint responds successfully, without exposing the token.
+- [x] Verified that the VM identity cannot list subscription Key Vaults (HTTP 403); creating the vault and assigning permissions requires an authorized Azure account.
+- [x] Owner created `jfrin-postmaster-vm-kv` in Japan East, Standard tier with Azure RBAC and soft-delete enabled, according to the Azure Portal screenshot. Its public endpoint currently allows all networks; restrict networking after access is working.
+- [x] Owner assigned the VM **Key Vault Secrets User** at vault scope; VM-side access to the intended secret returned HTTP 404 rather than forbidden, indicating the role works and the secret does not exist yet. No secret value was displayed.
+- [x] Azure Portal screenshot shows the owner has **Key Vault Secrets Officer** on the vault. Owner created `postmaster-beta-key`; the VM and a temporary host-networked Node container retrieved pinned version `82ca341b1da54cf0b29cba69a9a0fd5c` and verified the key format without displaying the value. Recovery and actual beta runtime integration remain untested.
+- [x] Fixed and tested cleanup incorrectly deleting a newly connected pending token using a previous approval's expiry; unchanged expired tokens still retain their seven-day window.
 
 ## To do before running real Gmail
 
-- [ ] Fix and test consent races involving disconnect, reconnect and denial/re-request. Decide and implement pending/denied token retention and handling of abandoned Google grants.
-- [ ] Fix the retention race where an expired approval moved back to pending retains an old expiry that could cause cleanup to delete a newly saved token. Preserve encrypted connections for **seven days after approval expiry** for reapproval.
-- [ ] Finish the beta's VM startup entry point, initial-admin bootstrap, deployment configuration and proxy routing. Proposed path: `/beta` on the existing HTTPS hostname. Do not replace the mock demo or expose the legacy unauthenticated dashboard.
-- [ ] Verify the VM's managed identity from the VM. Two SSH attempts after it was enabled timed out; do not print the resulting token.
-- [ ] Configure a Key Vault, least-privilege access, protected persistent data, scheduled retention, backups, key recovery and tested restore. The current cleanup only deletes the live token record; it does not revoke Google grants or delete backups.
+- [ ] Review and test remaining consent and revocation risks, including crash recovery while revocation is in flight, Google grant behavior and abandoned grants. Decide and implement pending/denied token retention.
+- [ ] Implement and schedule a complete pending/denied token retention policy and preserve expired encrypted connections for **seven days after approval expiry** for reapproval.
+- [ ] Complete and review beta startup and trusted admin bootstrap, deployment configuration and proxy routing; the new startup wiring is only locally tested with fakes. Proposed path: `/beta` on the existing HTTPS hostname. Do not replace the mock demo or expose the legacy unauthenticated dashboard.
+- [x] Verify the VM's managed identity from the VM, without printing the token.
+- [ ] Verify vault access from the beta runtime and further limit its role scope; configure protected persistent data, scheduled retention, backups, key recovery and tested restore. The current cleanup only deletes the live token record; it does not revoke Google grants or delete backups.
 - [ ] Resolve clock rollback, scheduler/failure recovery, rate limiting and concurrent revocation risks. Gmail actions and SQLite writes are not atomic; do not promise exactly-once processing.
 - [ ] Review Google restricted-scope requirements, privacy/consent, prompt-injection protection and Azure model data handling. Gmail `gmail.modify` is restricted; Testing or personal-use verification exceptions do not remove security or policy obligations.
 - [ ] Confirm cost and budget alerts for VM, storage, Key Vault and Azure model usage. The application limit is not an Azure spending cap.
@@ -106,8 +115,9 @@ Checked items exist in the **single-user app** unless explicitly labeled beta. T
 - The VM's `~/postmaster-demo/docker-compose.demo.yml` was modified to fix a Docker network collision. **Do not overwrite or reset it.** Updating image `postmaster-demo-demo` updates only the synthetic demo.
 - Identity web client: `secrets/google-sign-in-client-secret.json`, callback `/auth/google/callback`. Gmail web client: `secrets/google-client-secret-gmail-web.json`, callback `/auth/google/gmail/callback`. The older `secrets/credentials.json` is a separate desktop client.
 - Never print, paste, commit or bake secrets, tokens, vault keys or real email into images. Keep the Gmail client JSON, databases and backups protected.
-- Beta runtime, Key Vault adapter and deployment-related changes are local and **uncommitted**. Run `git status` before working; do not discard other changes. `docs/image.png` was already deleted in the working tree before the demo update.
-- The beta prototype is in `src/beta/`; `src/beta/runtime.ts` is local integration wiring, not a production entry point. Tests use fake providers, not real Gmail. The legacy single-user dashboard has no login and must remain on loopback.
+- Beta runtime and Key Vault adapter are committed in `73c4369`; subsequent changes are local and **uncommitted**. Run `git status` before working; do not discard other changes.
+- The owner requested no GitHub changes: do not commit, push, modify `.github/`, or change GitHub settings.
+- The beta prototype is in `src/beta/`; `src/beta-main.ts` and `src/beta/deployment.ts` are local startup wiring, not yet reviewed or deployed. Tests use fake providers, not real Gmail. The legacy single-user dashboard has no login and must remain on loopback.
 
 ## Other improvements
 

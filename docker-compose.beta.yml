@@ -1,0 +1,32 @@
+# Prototype only: review all consent, storage and proxy safeguards before using real Gmail.
+# Keep this deployment separate from the VM's modified mock-demo Compose file.
+services:
+  beta:
+    image: postmaster-beta:local
+    command: ['node', 'dist/beta-main.js']
+    env_file: ./secrets/beta.env
+    environment:
+      BETA_ORIGIN: 'https://${DEMO_HOST:?Set DEMO_HOST}'
+      BETA_BASE_PATH: /beta
+      BETA_DATABASE_PATH: /srv/data/beta.db
+      BETA_IDENTITY_CLIENT_PATH: /srv/secrets/identity.json
+      BETA_GMAIL_CLIENT_PATH: /srv/secrets/gmail.json
+      BETA_BIND: 0.0.0.0
+      BETA_PORT: '8081'
+    volumes:
+      - ./secrets/google-sign-in-client-secret.json:/srv/secrets/identity.json:ro
+      - ./secrets/google-client-secret-gmail-web.json:/srv/secrets/gmail.json:ro
+      - ./data:/srv/data
+    # No published ports. The Docker host and containers on the edge network can reach it.
+    networks:
+      edge:
+        aliases: [postmaster-beta]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+networks:
+  edge:
+    external: true
+    name: postmaster-demo_edge

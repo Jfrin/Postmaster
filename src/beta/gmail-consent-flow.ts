@@ -22,7 +22,7 @@ export class GmailConsentFlow {
     const now = this.now();
     if (!this.eligible(subject, now))
       throw new AccessDeniedError('access not eligible for consent');
-    const start = this.states.start(subject, now);
+    const start = this.states.start(subject, now, true);
     return {
       location: this.provider.authorizationUrl(start.state, start.nonce, start.challenge),
       cookie: start.cookie,
@@ -61,25 +61,26 @@ export class GmailConsentFlow {
       subject,
     );
     // Recheck inside the same database transaction as storage, after the network exchange.
-    this.vault.saveIfPendingOrActive(subject, refreshToken, this.now());
+    this.vault.saveIfPendingOrActive(subject, refreshToken, this.now(), pending.generation);
   }
 
   /** Caller must authorize the signed-in owner; works even after testing access expires. */
   async disconnect(subject: string): Promise<void> {
     this.access.stopProcessing(subject);
-    const token = this.vault.disableAndLoad(subject);
+    const token = this.vault.beginDisconnect(subject);
     if (!token) return;
     try {
       await this.provider.revoke(token);
     } catch {
+      this.vault.markRevocationFailed(subject);
       throw new Error('Gmail revocation failed');
     }
-    if (!this.vault.deleteIfUnchanged(subject, token)) throw new Error('Gmail connection changed');
+    if (!this.vault.finishDisconnect(subject, token)) throw new Error('Gmail connection changed');
   }
 
   /** Explicit local deletion only; this does not revoke the Google grant or delete backups. */
   forget(subject: string): void {
     this.access.stopProcessing(subject);
-    this.vault.delete(subject);
+    this.vault.forgetConnection(subject);
   }
 }

@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import { AccessDeniedError } from './access.js';
+import { initConsentFence, invalidateConsent } from './consent-fence.js';
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   DatabaseSync: typeof DatabaseSyncType;
@@ -37,6 +38,7 @@ export class GmailTokenVault {
     try {
       this.db.exec('BEGIN IMMEDIATE');
       inTransaction = true;
+      initConsentFence(this.db);
       this.db.exec(`CREATE TABLE IF NOT EXISTS beta_gmail_tokens (
         subject TEXT PRIMARY KEY, version INTEGER NOT NULL, nonce BLOB NOT NULL,
         ciphertext BLOB NOT NULL, tag BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 1
@@ -110,10 +112,17 @@ export class GmailTokenVault {
   }
 
   /** Pending users may store consent, but workers can still load only with active approval. */
-  saveIfPendingOrActive(subject: string, refreshToken: string, now: number): void {
+  saveIfPendingOrActive(
+    subject: string,
+    refreshToken: string,
+    now: number,
+    generation: number,
+  ): void {
     associatedData(subject);
     if (!Number.isSafeInteger(now) || now < 0 || now > 253_402_300_799_999)
       throw new Error('invalid timestamp');
+    if (!Number.isSafeInteger(generation) || generation < 1)
+      throw new AccessDeniedError('stale Gmail consent');
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const eligible = this.db
@@ -123,7 +132,116 @@ export class GmailTokenVault {
         )
         .get(subject, now);
       if (!eligible) throw new AccessDeniedError('access not eligible for consent');
+      if (
+        !this.db
+          .prepare(
+            `SELECT 1 FROM beta_gmail_consent_fences
+        WHERE subject = ? AND generation = ? AND revoking = 0`,
+          )
+          .get(subject, generation)
+      )
+        throw new AccessDeniedError('stale Gmail consent');
+      this.stopProcessingWithinTransaction(subject);
       this.save(subject, refreshToken);
+      // A new pending grant replaces the old expired grant. Its former approval expiry
+      // must not cause retention cleanup to delete this newly connected token.
+      this.db
+        .prepare(
+          "UPDATE beta_access_requests SET expires_at = NULL WHERE subject = ? AND status = 'pending'",
+        )
+        .run(subject);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /** Fence prior workers atomically with changes to the connection. */
+  private stopProcessingWithinTransaction(subject: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO beta_processing_controls (subject, running) VALUES (?, 0)
+        ON CONFLICT(subject) DO UPDATE SET running = 0, scanned_backlog_days = NULL`,
+      )
+      .run(subject);
+    this.db.prepare('UPDATE beta_worker_leases SET expires_at = 0 WHERE subject = ?').run(subject);
+  }
+
+  /** Invalidate prior consent and block new consent while Google revocation is outstanding. */
+  beginDisconnect(subject: string): string | null {
+    associatedData(subject);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const fence = this.db
+        .prepare('SELECT revoking FROM beta_gmail_consent_fences WHERE subject = ?')
+        .get(subject) as { revoking: number } | undefined;
+      if (fence?.revoking === 1) throw new AccessDeniedError('Gmail revocation in progress');
+      invalidateConsent(this.db, subject);
+      this.stopProcessingWithinTransaction(subject);
+      const token = this.load(subject);
+      if (token) {
+        this.db.prepare('UPDATE beta_gmail_tokens SET enabled = 0 WHERE subject = ?').run(subject);
+        this.db
+          .prepare('UPDATE beta_gmail_consent_fences SET revoking = 1 WHERE subject = ?')
+          .run(subject);
+      } else {
+        this.db
+          .prepare('UPDATE beta_gmail_consent_fences SET revoking = 0 WHERE subject = ?')
+          .run(subject);
+      }
+      this.db.exec('COMMIT');
+      return token;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /** Keep consent blocked after a failed revocation until the owner retries. */
+  markRevocationFailed(subject: string): void {
+    associatedData(subject);
+    this.db
+      .prepare(
+        'UPDATE beta_gmail_consent_fences SET revoking = 2 WHERE subject = ? AND revoking = 1',
+      )
+      .run(subject);
+  }
+
+  finishDisconnect(subject: string, expectedToken: string): boolean {
+    associatedData(subject);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const current = this.load(subject);
+      const left = Buffer.from(current ?? '');
+      const right = Buffer.from(expectedToken);
+      const same = current !== null && left.length === right.length && timingSafeEqual(left, right);
+      if (same) this.delete(subject);
+      this.db
+        .prepare(
+          'UPDATE beta_gmail_consent_fences SET revoking = ? WHERE subject = ? AND revoking = 1',
+        )
+        .run(same ? 0 : 2, subject);
+      this.db.exec('COMMIT');
+      return same;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /** Local-only removal also fences in-flight callbacks; it cannot bypass revocation. */
+  forgetConnection(subject: string): void {
+    associatedData(subject);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const fence = this.db
+        .prepare('SELECT revoking FROM beta_gmail_consent_fences WHERE subject = ?')
+        .get(subject) as { revoking: number } | undefined;
+      if (fence?.revoking) throw new AccessDeniedError('Gmail revocation in progress');
+      invalidateConsent(this.db, subject);
+      this.stopProcessingWithinTransaction(subject);
+      this.delete(subject);
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');

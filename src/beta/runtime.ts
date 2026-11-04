@@ -136,7 +136,7 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
       // Exposed for local integration tests; never accept HTTP-supplied subjects here.
       scheduler,
       server,
-      start(port = 0): Promise<void> {
+      start(port = 0, host: '127.0.0.1' | '0.0.0.0' = '127.0.0.1'): Promise<void> {
         if (startup || closing)
           return Promise.reject(new Error('runtime already started or closed'));
         startup = (async () => {
@@ -145,7 +145,7 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
             await new Promise<void>((resolve, reject) => {
               const onError = (error: Error) => reject(error);
               server.once('error', onError);
-              server.listen(port, '127.0.0.1', () => {
+              server.listen(port, host, () => {
                 server.off('error', onError);
                 resolve();
               });

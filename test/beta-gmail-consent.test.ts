@@ -160,6 +160,8 @@ describe('Gmail connection foundations', () => {
       });
       await expect(flow.disconnect('alice')).rejects.toThrow('connection changed');
       expect(vault.load('alice')).toBe('replacement-token');
+      expect(() => flow.forget('alice')).toThrow(AccessDeniedError);
+      await flow.disconnect('alice');
       flow.forget('alice');
       expect(vault.load('alice')).toBeNull();
     } finally {
@@ -215,6 +217,126 @@ describe('Gmail connection foundations', () => {
       ).rejects.toThrow(AccessDeniedError);
       expect(vault.load('bob')).toBeNull();
       expect(() => flow.start('bob')).toThrow(AccessDeniedError);
+    } finally {
+      states.close();
+      vault.close();
+      access.close();
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it('rejects stale callbacks after denial and re-request, forget, or a newer consent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'postmaster-consent-fence-'));
+    const path = join(dir, 'beta.db');
+    const access = new BetaAccessStore(path);
+    const vault = new GmailTokenVault(path, randomBytes(32));
+    const states = new GmailConsentStateStore(path);
+    const provider = {
+      authorizationUrl: (state: string) => `https://accounts.google.com/example?state=${state}`,
+      exchange: vi.fn(async () => 'synthetic'),
+      revoke: vi.fn(async (_token: string) => {}),
+    };
+    const flow = new GmailConsentFlow(states, access, vault, provider, () => now);
+    try {
+      access.bootstrapAdmin('admin');
+      for (const operation of ['denial', 'forget', 'newer', 'disconnect'] as const) {
+        const subject = `user-${operation}`;
+        access.requestAccess(subject, `${subject}@example.com`, now);
+        const start = flow.start(subject);
+        provider.exchange.mockImplementationOnce(async () => {
+          if (operation === 'denial') {
+            access.deny('admin', subject, now);
+            access.requestAccess(subject, `${subject}@example.com`, now);
+          } else if (operation === 'forget') flow.forget(subject);
+          else if (operation === 'newer') flow.start(subject);
+          else await flow.disconnect(subject);
+          return 'synthetic';
+        });
+        await expect(
+          flow.finish(
+            subject,
+            new URL(start.location).searchParams.get('state')!,
+            'code',
+            start.cookie.split(';')[0],
+          ),
+        ).rejects.toThrow(AccessDeniedError);
+        expect(vault.load(subject)).toBeNull();
+      }
+    } finally {
+      states.close();
+      vault.close();
+      access.close();
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it('blocks reconnect and local removal during revocation and after failure until a retry succeeds', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'postmaster-revoke-fence-'));
+    const path = join(dir, 'beta.db');
+    const access = new BetaAccessStore(path);
+    const vault = new GmailTokenVault(path, randomBytes(32));
+    const states = new GmailConsentStateStore(path);
+    const provider = {
+      authorizationUrl: (state: string) => `https://accounts.google.com/example?state=${state}`,
+      exchange: vi.fn(async () => 'synthetic'),
+      revoke: vi.fn(async (_token: string) => {}),
+    };
+    const flow = new GmailConsentFlow(states, access, vault, provider, () => now);
+    try {
+      access.requestAccess('alice', 'alice@example.com', now);
+      vault.save('alice', 'synthetic');
+      provider.revoke.mockImplementationOnce(async () => {
+        expect(() => flow.start('alice')).toThrow(AccessDeniedError);
+        expect(() => flow.forget('alice')).toThrow(AccessDeniedError);
+        await expect(flow.disconnect('alice')).rejects.toThrow(AccessDeniedError);
+        throw new Error('provider failure');
+      });
+      await expect(flow.disconnect('alice')).rejects.toThrow('Gmail revocation failed');
+      expect(() => flow.start('alice')).toThrow(AccessDeniedError);
+      expect(() => flow.forget('alice')).toThrow(AccessDeniedError);
+      await flow.disconnect('alice');
+      expect(vault.has('alice')).toBe(false);
+      expect(() => flow.start('alice')).not.toThrow();
+    } finally {
+      states.close();
+      vault.close();
+      access.close();
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it('stops processing atomically when a new Gmail connection is saved', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'postmaster-reconnect-'));
+    const path = join(dir, 'beta.db');
+    const access = new BetaAccessStore(path);
+    const vault = new GmailTokenVault(path, randomBytes(32));
+    const states = new GmailConsentStateStore(path);
+    const flow = new GmailConsentFlow(
+      states,
+      access,
+      vault,
+      {
+        authorizationUrl: (state) => `https://accounts.google.com/example?state=${state}`,
+        exchange: async () => 'new-token',
+        revoke: async () => {},
+      },
+      () => now,
+    );
+    try {
+      access.bootstrapAdmin('admin');
+      access.requestAccess('alice', 'alice@example.com', now);
+      access.approve('admin', 'alice', now + 60_000, 100, now);
+      vault.save('alice', 'old-token');
+      access.startProcessing('alice', now);
+      const start = flow.start('alice');
+      await flow.finish(
+        'alice',
+        new URL(start.location).searchParams.get('state')!,
+        'code',
+        start.cookie.split(';')[0],
+      );
+      expect(vault.loadIfActive('alice', now)).toBe('new-token');
+      expect(access.processingRequested('alice')).toBe(false);
     } finally {
       states.close();
       vault.close();
