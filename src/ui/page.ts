@@ -42,6 +42,7 @@ td.trunc{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowr
 #toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:10px 16px;border-radius:8px;max-width:80vw;white-space:pre-wrap;display:none;z-index:9}
 #toast.bad{background:var(--bad);color:#fff}
 .hint{font-size:12px;color:var(--muted);margin:4px 0 0}
+body{line-height:1.55}header{padding:15px 24px;flex-wrap:wrap}header h1{font-size:18px;letter-spacing:-.03em}nav{gap:2px;padding-top:18px;overflow:auto}nav button{padding:10px 15px;white-space:nowrap}main{margin:auto;padding-top:22px}.card{padding:20px;border-radius:3px;box-shadow:0 4px 18px #172c480a}.badge,.chip,button.btn,button.ghost,input,textarea,select,#toast{border-radius:3px}button.btn,button.ghost{font-weight:650;padding:8px 14px}input,textarea,select{padding:8px 10px}th,td{padding:10px 8px}th{letter-spacing:.04em;text-transform:uppercase}:focus-visible{outline:3px solid #7ba7ff;outline-offset:2px}@media(max-width:600px){header{position:static;padding:14px}nav{padding-left:14px}main{padding:16px 14px 50px}}
 </style>
 </head>
 <body>

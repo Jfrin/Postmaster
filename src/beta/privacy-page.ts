@@ -1,8 +1,14 @@
+import {
+  PUBLIC_DOCUMENT_FOOTER,
+  PUBLIC_DOCUMENT_HEADER,
+  PUBLIC_DOCUMENT_STYLE,
+} from './public-style.js';
+
 /** Public privacy policy for the closed beta. */
 export const PRIVACY_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Postmaster privacy policy</title><style>body{font:16px/1.6 system-ui,sans-serif;max-width:48rem;margin:5vh auto;padding:1.5rem}a{color:inherit}h2{margin-top:2rem}</style></head><body><main>
-<p><a href="/">Home</a> · <a href="/terms">Terms of service</a></p><h1>Postmaster privacy policy</h1>
+<title>Postmaster privacy policy</title><style>${PUBLIC_DOCUMENT_STYLE}</style></head><body>${PUBLIC_DOCUMENT_HEADER}<main class="document">
+<div class="document-heading"><span class="eyebrow">The details · Privacy</span><h1>Postmaster privacy policy</h1></div>
 <p>Postmaster is a closed-beta email organization service operated by Jose Andres Ofrin in the Philippines. Questions or privacy requests can be sent to <a href="mailto:joseofrin@gmail.com">joseofrin@gmail.com</a>.</p>
 <h2>Information Postmaster uses</h2><ul>
 <li><strong>Applications and sign-in:</strong> The beta application collects the email address you submit; it is not verified by the application form. A previous version briefly sent inbox-verification codes and may have retained related records. Google sign-in provides a verified email address and Google account identifier to identify you and control access. Sign-in uses Google identity permissions, including profile scope; signing in alone does not connect Gmail.</li>
@@ -22,4 +28,4 @@ export const PRIVACY_PAGE = `<!doctype html>
 <p>Gmail tokens are encrypted, and the service uses access controls and HTTPS. This is an experimental beta: security isolation, recovery, backups and monitoring are not fully hardened, and no system can guarantee security. Avoid connecting an account if those limitations are unacceptable to you.</p>
 <h2>Changes and contact</h2>
 <p>This policy may change as the service changes. Material changes to the use of Google user data require appropriate notice and consent before the new use. Contact <a href="mailto:joseofrin@gmail.com">joseofrin@gmail.com</a> with questions or requests.</p>
-</main></body></html>`;
+</main>${PUBLIC_DOCUMENT_FOOTER}</body></html>`;

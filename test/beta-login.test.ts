@@ -84,6 +84,8 @@ describe('identity login integration with a simulated Google provider', () => {
       expect(privacy.body).toContain('Azure OpenAI');
       expect(privacy.body).toContain('does not revoke access at Google');
       expect(privacy.body).toContain('href="/terms"');
+      expect(privacy.body).toContain('<main class="document">');
+      expect(privacy.body).toContain('aria-label="Legal"');
       const terms = await send(base, '/terms');
       expect(terms.status).toBe(200);
       expect(terms.headers['content-type']).toContain('text/html');
@@ -91,6 +93,7 @@ describe('identity login integration with a simulated Google provider', () => {
       expect(terms.body).toContain('Jose Andres Ofrin');
       expect(terms.body).toContain('Philippines');
       expect(terms.body).toContain('href="/privacy"');
+      expect(terms.body).toContain('<main class="document">');
       const login = await send(base, '/beta');
       expect(login.status).toBe(200);
       expect(login.body).toContain('href="/beta/auth/google/start"');

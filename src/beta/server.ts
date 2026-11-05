@@ -22,6 +22,7 @@ import { BETA_PAGE } from './page.js';
 import { BETA_ADMIN_PAGE } from './admin-page.js';
 import { BETA_INTAKE_PAGE } from './intake-page.js';
 import { PRIVACY_PAGE } from './privacy-page.js';
+import { polishHostedPage } from './public-style.js';
 import { TERMS_PAGE } from './terms-page.js';
 import {
   adminAccessPage,
@@ -107,7 +108,7 @@ function send(res: ServerResponse, status: number, data: unknown, html = false):
       "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'",
     'Referrer-Policy': 'no-referrer',
   });
-  res.end(html ? String(data) : JSON.stringify(data));
+  res.end(html ? polishHostedPage(String(data)) : JSON.stringify(data));
 }
 
 function matchesCsrf(provided: string | string[] | undefined, expected: string): boolean {

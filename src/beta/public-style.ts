@@ -1,0 +1,22 @@
+/** Shared presentation for public informational pages. */
+export const PUBLIC_DOCUMENT_STYLE = `
+:root{font:16px/1.7 system-ui,-apple-system,Segoe UI,sans-serif;color:#16243b;background:#f5f8fd}*{box-sizing:border-box}body{margin:0}a{color:#2459d1;text-underline-offset:3px}a:hover{color:#173e99}.site-header,.site-footer{max-width:1120px;margin:auto;padding:22px 24px;display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap}.site-header{border-bottom:1px solid #dce5f1}.brand{color:#16243b;font-weight:800;font-size:1.15rem;letter-spacing:-.03em;text-decoration:none}.site-header nav,.site-footer nav{display:flex;gap:20px;flex-wrap:wrap}.site-header nav a{font-size:.9rem;font-weight:650;text-decoration:none}.document{max-width:880px;margin:0 auto;padding:64px 24px 80px}.document-heading{border-bottom:1px solid #cbd8e9;padding-bottom:28px;margin-bottom:32px}.eyebrow{color:#2459d1;font-size:.75rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.document h1{font-size:clamp(2.4rem,5vw,3.8rem);line-height:1.08;letter-spacing:-.05em;margin:10px 0 0}.document h2{font-size:1.3rem;letter-spacing:-.025em;line-height:1.3;margin:42px 0 12px}.document p,.document li{color:#40536b}.document p{margin:0 0 18px}.document ul{padding-left:1.3rem}.document li{padding-left:4px;margin-bottom:14px}.document strong{color:#16243b}.document code{font-size:.9em;background:#e8effa;padding:2px 4px;overflow-wrap:anywhere}.site-footer{border-top:1px solid #dce5f1;color:#59677b;font-size:.875rem}.site-footer a{color:#4b5c73}:focus-visible{outline:3px solid #7ba7ff;outline-offset:3px}@media(max-width:600px){.site-header,.site-footer{padding:18px 20px}.site-header nav,.site-footer nav{gap:14px}.document{padding:42px 20px 56px}.document h2{margin-top:32px}}
+`;
+
+export const PUBLIC_DOCUMENT_HEADER = `<header class="site-header"><a class="brand" href="/">✳ Postmaster</a><nav aria-label="Main navigation"><a href="/demo">Try the demo</a><a href="/beta/apply">Apply for beta</a><a href="/beta">Sign in</a></nav></header>`;
+
+export const PUBLIC_DOCUMENT_FOOTER = `<footer class="site-footer"><span>Postmaster · Experimental closed beta</span><nav aria-label="Legal"><a href="/privacy">Privacy policy</a><a href="/terms">Terms of service</a></nav></footer>`;
+
+/** Finishing touches shared by the hosted pages, including error and admin pages. */
+export function polishHostedPage(html: string): string {
+  return html.replace(
+    '</head>',
+    `<style>
+.card,.button,.note,button,input,textarea,select,.setup,.terminal,#toast{border-radius:3px}.badge,.chip{border-radius:3px}
+.brand{letter-spacing:-.04em}.hero{border-bottom:1px solid #dce5f1}.hero h1{max-width:13ch}.hero .lead{max-width:58ch}.hero .button,.card .button{border-radius:3px}.hero .button:hover{border-color:#2459d1}.grid .card{border-top:3px solid #2459d1;box-shadow:none}.grid .card h3{color:#16243b}.section h2{margin-bottom:24px}.note{border-radius:0;background:#eaf1fd}.steps li{padding:7px 0}.card{border-radius:3px}.card .button{transition:background .15s ease}
+body:has(#apply){max-width:1120px;margin:0 auto;padding:24px}body:has(#apply) main{max-width:680px;margin:48px auto;padding:36px;border-radius:3px;border-top:3px solid #2459d1}body:has(#apply) h1{font-size:clamp(2rem,5vw,3rem);line-height:1.1;letter-spacing:-.045em;margin:28px 0 18px}body:has(#apply) form{margin-top:28px}body:has(#apply) input{padding:12px}body:has(#apply) button{padding:12px 18px;border-radius:3px}body:has(#apply) #message:empty{display:none}
+body:has(main > nav[aria-label="Navigation"]),body:has(main > p[role="alert"]){background:#f5f8fd;color:#16243b;max-width:680px;margin:8vh auto;padding:24px}body:has(main > nav[aria-label="Navigation"]) main,body:has(main > p[role="alert"]) main{background:white;border:1px solid #dce5f1;border-top:3px solid #2459d1;border-radius:3px;padding:32px;box-shadow:0 12px 35px #16243b0d}body:has(main > nav[aria-label="Navigation"]) h1,body:has(main > p[role="alert"]) h1{line-height:1.15;letter-spacing:-.04em}body:has(main > nav[aria-label="Navigation"]) a,body:has(main > p[role="alert"]) a{color:#2459d1}body:has(main > nav[aria-label="Navigation"]) nav a,body:has(main > p[role="alert"]) .button{border-radius:3px}
+:focus-visible{outline:3px solid #7ba7ff;outline-offset:3px}@media(max-width:600px){body:has(#apply){padding:16px}body:has(#apply) main{margin:24px auto;padding:22px}body:has(main > nav[aria-label="Navigation"]) main,body:has(main > p[role="alert"]) main{padding:22px}}
+</style></head>`,
+  );
+}
