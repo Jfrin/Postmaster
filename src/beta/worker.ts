@@ -21,6 +21,7 @@ import {
   type ProcessingEvent,
 } from './processing-events.js';
 import { createBetaStateWriteGuard } from './state-guard.js';
+import { privateStateIdentifiers } from './data-privacy.js';
 import { GmailTokenVault } from './token-vault.js';
 import { BetaUserConfigStore } from './user-config.js';
 
@@ -69,12 +70,14 @@ export class BetaCycleRunner {
   private readonly events: BetaProcessingEvents;
   private readonly now: () => Date;
   private readonly leaseMs: number;
+  private readonly stateKey: Buffer;
   private running = 0;
   private closed = false;
 
   constructor(private readonly options: BetaWorkerOptions) {
     if (!options.databasePath || options.databasePath === ':memory:')
       throw new Error('shared database file required');
+    this.stateKey = Buffer.from(options.vaultKey);
     this.leaseMs = options.leaseMs ?? 30_000;
     if (!Number.isSafeInteger(this.leaseMs) || this.leaseMs < 1000 || this.leaseMs > 300_000)
       throw new Error('invalid lease duration');
@@ -110,6 +113,7 @@ export class BetaCycleRunner {
     this.configs.close();
     this.vault.close();
     this.access.close();
+    this.stateKey.fill(0);
     this.closed = true;
   }
 
@@ -131,12 +135,13 @@ export class BetaCycleRunner {
     );
     if (!lease) return { status: 'busy' };
     this.running++;
+    const writeGuard = createBetaStateWriteGuard(lease, () => this.now().getTime());
     const event = (
       kind: ProcessingEvent,
       details?: { status?: number; seen?: number; processed?: number; failed?: number },
     ) => {
       try {
-        this.events.append(subject, this.now().getTime(), kind, details);
+        this.events.append(subject, this.now().getTime(), kind, details, writeGuard);
       } catch {
         // Observability must not disable the worker's authorization or processing fences.
       }
@@ -176,7 +181,8 @@ export class BetaCycleRunner {
       state = new State(
         this.options.databasePath,
         subject,
-        createBetaStateWriteGuard(lease, () => this.now().getTime()),
+        writeGuard,
+        privateStateIdentifiers(this.stateKey, subject),
       );
       const scanBacklog = this.access.needsBacklogScan(
         lease,

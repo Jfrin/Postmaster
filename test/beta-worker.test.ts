@@ -8,6 +8,7 @@ import { MockClassifier } from '../src/classifier.js';
 import { State } from '../src/state.js';
 import { AccessDeniedError, BetaAccessStore } from '../src/beta/access.js';
 import { guardBetaClock } from '../src/beta/clock.js';
+import { privateStateIdentifiers } from '../src/beta/data-privacy.js';
 import { GmailTokenVault } from '../src/beta/token-vault.js';
 import { BetaProcessingEvents } from '../src/beta/processing-events.js';
 import { BetaCycleRunner, type GmailServiceFactory } from '../src/beta/worker.js';
@@ -140,8 +141,8 @@ describe('fenced beta processing cycle prototype', () => {
       const [alice, bob] = await Promise.all([runner.run('alice'), runner.run('bob')]);
       expect(alice).toMatchObject({ status: 'completed', stats: { processed: 1, failed: 0 } });
       expect(bob).toMatchObject({ status: 'completed', stats: { processed: 1, failed: 0 } });
-      const aliceState = new State(path, 'alice');
-      const bobState = new State(path, 'bob');
+      const aliceState = new State(path, 'alice', undefined, privateStateIdentifiers(key, 'alice'));
+      const bobState = new State(path, 'bob', undefined, privateStateIdentifiers(key, 'bob'));
       try {
         expect(aliceState.hasDecision('same-id')).toBe(true);
         expect(bobState.hasDecision('same-id')).toBe(true);
@@ -200,7 +201,7 @@ describe('fenced beta processing cycle prototype', () => {
       expect(
         events.recent('alice', now).map((event) => (event as { event: string }).event),
       ).not.toContain('backlog_completed');
-      const state = new State(path, 'alice');
+      const state = new State(path, 'alice', undefined, privateStateIdentifiers(key, 'alice'));
       try {
         expect(state.getCursor()).toBeNull();
         expect(state.hasDecision('one')).toBe(true);

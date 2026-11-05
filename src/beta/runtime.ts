@@ -1,6 +1,7 @@
 import type { Classifier } from '../classifier.js';
 import { BetaAccessStore } from './access.js';
 import { BetaActivityStore } from './activity.js';
+import { BetaDataPrivacy } from './data-privacy.js';
 import { guardBetaClock } from './clock.js';
 import { GmailConsentFlow, type GmailConsentProvider } from './gmail-consent-flow.js';
 import { GmailConsentStateStore } from './gmail-consent-state.js';
@@ -78,7 +79,7 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
   };
 
   try {
-    const access = own(new BetaAccessStore(options.databasePath, options.vaultKey));
+    const access = own(new BetaAccessStore(options.databasePath, options.vaultKey, now()));
     const notifications = options.notificationSender
       ? new NotificationWorker(access, options.notificationSender, now)
       : null;
@@ -89,6 +90,7 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
     const sessions = own(new BetaSessionStore(options.databasePath));
     const identityStates = own(new IdentityLoginStateStore(options.databasePath));
     const consentStates = own(new GmailConsentStateStore(options.databasePath));
+    const privacy = own(new BetaDataPrivacy(options.databasePath, options.vaultKey, now()));
     if (options.applicationAccess && !options.onlySubject)
       throw new Error('application access requires an owner subject');
     const provider = options.applicationAccess
@@ -141,6 +143,7 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
       options.tickMs,
       (time) => {
         deleteStaleGmailTokens(options.databasePath, time);
+        privacy.cleanup(time);
       },
     );
     const server = createBetaServer({
@@ -153,6 +156,7 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
       userConfigStore: config,
       activityStore: activity,
       processingEvents,
+      dataPrivacy: privacy,
       processingOnline: () => scheduler.status().online,
       notificationsEnabled: !!notifications,
       authenticate: async (req) => {

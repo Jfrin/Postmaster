@@ -1,6 +1,6 @@
 # Architecture
 
-Postmaster is an experimental closed beta, not a production-ready service. The public site, authenticated synthetic demo and real Gmail beta are separate experiences.
+Postmaster is an experimental closed beta, not a production-ready service. The public site, public synthetic demo and real Gmail beta are separate experiences.
 
 ![Synthetic demo dashboard with example activity](screenshots/synthetic-demo.png)
 
@@ -17,7 +17,7 @@ Browser -> HTTPS proxy -> beta server -> account-scoped SQLite state
                             |                           -> decision / Gmail actions
                             +-> separate notification sender -> operator's Gmail
 
-Browser -> HTTPS proxy -> identity-protected synthetic demo (no Gmail or Azure)
+Browser -> HTTPS proxy -> public synthetic demo (no Gmail or Azure)
 ```
 
 - **Identity and access:** Google sign-in identifies the account. An admin reviews unverified email applications; the first matching Google-authoritative identity binds an approved application. Gmail authorization is a separate consent flow. Approval, configuration and an explicit Start are required before processing.

@@ -7,6 +7,10 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { BetaAccessStore } from '../src/beta/access.js';
 import { BetaActivityStore } from '../src/beta/activity.js';
+import { BetaDataPrivacy, privateStateIdentifiers } from '../src/beta/data-privacy.js';
+import { GmailConsentFlow } from '../src/beta/gmail-consent-flow.js';
+import { GmailConsentStateStore } from '../src/beta/gmail-consent-state.js';
+import { BetaProcessingEvents } from '../src/beta/processing-events.js';
 import { createBetaServer } from '../src/beta/server.js';
 import { BetaSessionStore } from '../src/beta/session-store.js';
 import { GmailTokenVault } from '../src/beta/token-vault.js';
@@ -59,20 +63,40 @@ describe('beta processing controls and activity prototype', () => {
     const dir = mkdtempSync(join(tmpdir(), 'postmaster-processing-http-'));
     const path = join(dir, 'beta.db');
     const access = new BetaAccessStore(path);
-    const vault = new GmailTokenVault(path, randomBytes(32));
+    const key = randomBytes(32);
+    const vault = new GmailTokenVault(path, key);
     const config = new BetaUserConfigStore(
       path,
       readFileSync('config/categories.default.yaml', 'utf8'),
     );
     const activity = new BetaActivityStore(path);
     const sessions = new BetaSessionStore(path);
+    const consent = new GmailConsentStateStore(path);
+    const events = new BetaProcessingEvents(path);
+    const privacy = new BetaDataPrivacy(path, key, now);
+    let revokeFails = true;
+    const revoked: string[] = [];
+    const gmail = new GmailConsentFlow(
+      consent,
+      access,
+      vault,
+      {
+        authorizationUrl: () => 'https://example.com',
+        exchange: async () => 'unused',
+        revoke: async (token) => {
+          if (revokeFails) throw new Error('synthetic provider failure');
+          revoked.push(token);
+        },
+      },
+      () => now,
+    );
     access.bootstrapAdmin('admin');
     for (const subject of ['alice', 'bob']) {
       access.requestAccess(subject, `${subject}@example.com`, now);
       access.approve('admin', subject, now + 60_000, 100, now);
       vault.save(subject, `synthetic-${subject}-token`);
     }
-    const aliceState = new State(path, 'alice');
+    const aliceState = new State(path, 'alice', undefined, privateStateIdentifiers(key, 'alice'));
     aliceState.recordDecision(
       'alice-message',
       { category: 'needs_review', confidence: 1, source: 'rule', reason: 'synthetic' },
@@ -88,6 +112,8 @@ describe('beta processing controls and activity prototype', () => {
       now: () => now,
       userConfigStore: config,
       activityStore: activity,
+      dataPrivacy: privacy,
+      gmailConsentFlow: gmail,
       processingOnline: () => online,
       authenticate: async (req) => sessions.authenticate(req.headers.cookie, now),
     });
@@ -162,8 +188,126 @@ describe('beta processing controls and activity prototype', () => {
           )
         ).status,
       ).toBe(503);
+      expect(
+        (
+          await send(
+            base,
+            '/api/data/delete',
+            alice,
+            'POST',
+            { scope: 'all', confirm: true },
+            'bad',
+          )
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await send(
+            base,
+            '/api/data/delete',
+            alice,
+            'POST',
+            { scope: 'all', confirm: true, subject: 'bob' },
+            aliceSession.csrfToken,
+          )
+        ).status,
+      ).toBe(400);
+      expect(
+        (
+          await send(
+            base,
+            '/api/data/delete',
+            alice,
+            'POST',
+            { scope: 'content', confirm: true },
+            aliceSession.csrfToken,
+          )
+        ).status,
+      ).toBe(200);
+      expect(activity.recent('alice', now)[0]!.subject).toBeNull();
+      expect(access.ownRequest('bob')).not.toBeNull();
+      expect(
+        (
+          await send(
+            base,
+            '/api/data/delete',
+            alice,
+            'POST',
+            { scope: 'all', confirm: true },
+            aliceSession.csrfToken,
+          )
+        ).status,
+      ).toBe(200);
+      expect((await send(base, '/api/session', alice)).status).toBe(200);
+      expect(vault.has('alice')).toBe(true);
+      expect(access.ownRequest('alice')).not.toBeNull();
+      expect(
+        (await send(base, '/api/account/delete', alice, 'POST', { confirm: true }, 'bad')).status,
+      ).toBe(403);
+      expect(
+        (
+          await send(
+            base,
+            '/api/account/delete',
+            alice,
+            'POST',
+            { confirm: true, subject: 'bob' },
+            aliceSession.csrfToken,
+          )
+        ).status,
+      ).toBe(400);
+      expect(
+        (
+          await send(
+            base,
+            '/api/account/delete',
+            alice,
+            'POST',
+            { confirm: true },
+            aliceSession.csrfToken,
+          )
+        ).status,
+      ).toBe(503);
+      expect(vault.has('alice')).toBe(true);
+      expect(access.ownRequest('alice')).not.toBeNull();
+      expect(access.processingRequested('alice')).toBe(false);
+      revokeFails = false;
+      const deleted = await send(
+        base,
+        '/api/account/delete',
+        alice,
+        'POST',
+        { confirm: true },
+        aliceSession.csrfToken,
+      );
+      expect(deleted.status).toBe(200);
+      expect(JSON.parse(deleted.body)).toEqual({ ok: true, gmailRevocation: 'requested' });
+      expect(revoked).toEqual(['synthetic-alice-token']);
+      expect((await send(base, '/api/session', alice)).status).toBe(401);
+      expect(access.ownRequest('alice')).toBeNull();
+      expect(vault.has('alice')).toBe(false);
+      expect(access.ownRequest('bob')).not.toBeNull();
+      const bobSession = JSON.parse((await send(base, '/api/session', bob)).body) as {
+        csrfToken: string;
+      };
+      vault.forgetConnection('bob');
+      const noToken = await send(
+        base,
+        '/api/account/delete',
+        bob,
+        'POST',
+        { confirm: true },
+        bobSession.csrfToken,
+      );
+      expect(noToken.status).toBe(200);
+      expect(JSON.parse(noToken.body)).toEqual({ ok: true, gmailRevocation: 'no-local-token' });
+      expect(revoked).toEqual(['synthetic-alice-token']);
+      expect((await send(base, '/api/session', bob)).status).toBe(401);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      privacy.close();
+      events.close();
+      consent.close();
       sessions.close();
       activity.close();
       config.close();

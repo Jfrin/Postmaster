@@ -5,7 +5,7 @@ import type { Config } from '../config.js';
 import { matchRule } from '../rules.js';
 import { cleanBody, parseAddress } from '../text.js';
 import type { EmailMessage } from '../types.js';
-import { DEMO_PAGE } from './page.js';
+import { demoPage } from './page.js';
 
 const Input = z
   .object({
@@ -38,7 +38,7 @@ async function handle(
     req.method === 'GET' &&
     (url.pathname === '/' || url.pathname === '/demo' || url.pathname === '/demo/')
   ) {
-    return respond(res, 200, DEMO_PAGE, 'text/html; charset=utf-8');
+    return respond(res, 200, demoPage(config), 'text/html; charset=utf-8');
   }
   if (req.method !== 'POST' || url.pathname !== '/api/try') {
     return respond(res, 404, '{"error":"not found"}', 'application/json');
@@ -86,7 +86,7 @@ async function handle(
   return respond(res, 200, JSON.stringify({ ...result, category }), 'application/json');
 }
 
-/** Only deploy behind an authentication proxy, never publish this server directly. */
+/** Deploy behind a proxy that exposes only the synthetic demo routes. */
 export function createDemoServer(config: Config, origin: string): Server {
   return createServer((req, res) => {
     handle(req, res, config, origin).catch(() =>

@@ -32,6 +32,10 @@ export interface DecisionMeta {
 
 /** Called inside the same SQLite write transaction as each state mutation. */
 export type StateWriteGuard = (db: DatabaseSyncType, userId: string) => void;
+export interface PrivateStateIdentifiers {
+  message(value: string): string;
+  sender(value: string): string;
+}
 
 /** SQLite state. Every table carries user_id from day one so multi-user is not a rewrite. */
 export class State {
@@ -41,6 +45,7 @@ export class State {
     path: string,
     private readonly userId = 'default',
     private readonly writeGuard?: StateWriteGuard,
+    private readonly privateIds?: PrivateStateIdentifiers,
   ) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
@@ -59,6 +64,10 @@ export class State {
       );
       CREATE TABLE IF NOT EXISTS llm_calls (
         user_id TEXT, day TEXT, count INTEGER, PRIMARY KEY (user_id, day)
+      );
+      CREATE TABLE IF NOT EXISTS beta_email_content (
+        user_id TEXT NOT NULL, message_id TEXT NOT NULL, sender TEXT, subject TEXT,
+        expires_at INTEGER NOT NULL, PRIMARY KEY (user_id, message_id)
       );
     `);
     this.migrate();
@@ -115,7 +124,7 @@ export class State {
       .prepare(
         `SELECT 1 FROM decisions WHERE user_id = ? AND message_id = ?${appliedOnly ? ' AND applied = 1' : ''}`,
       )
-      .get(this.userId, messageId);
+      .get(this.userId, this.privateIds?.message(messageId) ?? messageId);
   }
 
   /** Preserve applied decisions, but replace a dry-run decision when it is applied live. */
@@ -126,7 +135,8 @@ export class State {
     now: Date,
     meta: DecisionMeta = {},
   ): void {
-    this.write(() =>
+    this.write(() => {
+      const storedId = this.privateIds?.message(messageId) ?? messageId;
       this.db
         .prepare(
           `INSERT INTO decisions
@@ -140,17 +150,32 @@ export class State {
         )
         .run(
           this.userId,
-          messageId,
+          storedId,
           d.category,
           d.confidence,
           d.source,
-          d.reason,
+          this.privateIds ? '' : d.reason,
           applied ? 1 : 0,
           now.toISOString(),
-          meta.sender ?? null,
-          meta.subject ?? null,
-        ),
-    );
+          this.privateIds ? null : (meta.sender ?? null),
+          this.privateIds ? null : (meta.subject ?? null),
+        );
+      if (this.privateIds && (meta.sender || meta.subject)) {
+        this.db
+          .prepare(
+            `INSERT INTO beta_email_content (user_id, message_id, sender, subject, expires_at)
+          VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id, message_id) DO UPDATE SET
+          sender=excluded.sender, subject=excluded.subject, expires_at=excluded.expires_at`,
+          )
+          .run(
+            this.userId,
+            storedId,
+            meta.sender ?? null,
+            meta.subject ?? null,
+            now.getTime() + 86_400_000,
+          );
+      }
+    });
   }
 
   recent(limit: number): DecisionRow[] {
@@ -174,13 +199,15 @@ export class State {
   cachedCategory(sender: string): string | null {
     const row = this.db
       .prepare('SELECT category, streak FROM sender_cache WHERE user_id = ? AND sender = ?')
-      .get(this.userId, sender) as { category: string; streak: number } | undefined;
+      .get(this.userId, this.privateIds?.sender(sender) ?? sender) as
+      { category: string; streak: number } | undefined;
     return row && row.streak >= CACHE_STREAK ? row.category : null;
   }
 
   /** Same category with high confidence N times in a row earns a cache entry. */
   observeSender(sender: string, category: string, confidence: number): void {
     this.write(() => {
+      sender = this.privateIds?.sender(sender) ?? sender;
       if (confidence < CACHE_MIN_CONFIDENCE) {
         this.db
           .prepare('DELETE FROM sender_cache WHERE user_id = ? AND sender = ?')

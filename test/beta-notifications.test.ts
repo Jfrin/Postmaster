@@ -17,6 +17,21 @@ vi.mock('google-auth-library', () => ({
 afterEach(() => vi.unstubAllGlobals());
 
 describe('application notifications', () => {
+  it('does not send or expose old queued verification messages', async () => {
+    const store = new BetaAccessStore(':memory:', Buffer.alloc(32, 1));
+    try {
+      store.bootstrapAdmin('owner');
+      store.requestApplicationVerification('alice@example.com', 1000);
+      const send = vi.fn(async () => {});
+      await new NotificationWorker(store, send, () => 1000).tick();
+      expect(send).not.toHaveBeenCalled();
+      expect(store.notificationCounts('owner', false)).toEqual({ pending: 0, failed: 0 });
+      expect(store.failedNotifications('owner', false)).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
   it('queues only new applications and changed decisions, and supersedes unsent decisions', () => {
     const store = new BetaAccessStore(':memory:');
     try {

@@ -80,6 +80,21 @@ describe('simulated Gmail consent through the beta server', () => {
     const alice = sessions.issue('alice', 'alice@example.com', now, 60_000).split(';')[0]!;
     const bob = sessions.issue('bob', 'bob@example.com', now, 60_000).split(';')[0]!;
     try {
+      const missingSession = await send(base, '/auth/google/gmail/callback');
+      expect(missingSession.status).toBe(401);
+      expect(missingSession.headers['content-type']).toContain('text/html');
+      expect(missingSession.body).toContain('session is missing or expired');
+      expect(missingSession.body).toContain('Return to beta');
+      expect(missingSession.headers['set-cookie']?.[0]).toContain('Max-Age=0');
+      const cancelled = await send(base, '/auth/google/gmail/callback?error=%3Cscript%3E', 'GET', {
+        Cookie: alice,
+      });
+      expect(cancelled.status).toBe(400);
+      expect(cancelled.headers['content-type']).toContain('text/html');
+      expect(cancelled.headers['cache-control']).toBe('no-store');
+      expect(cancelled.body).toContain('cancelled or invalid');
+      expect(cancelled.body).not.toContain('<script>');
+      expect(cancelled.headers['set-cookie']?.[0]).toContain('Max-Age=0');
       const self = JSON.parse(
         (await send(base, '/api/session', 'GET', { Cookie: alice })).body,
       ) as { csrfToken: string; gmailConnected: boolean };
@@ -122,9 +137,10 @@ describe('simulated Gmail consent through the beta server', () => {
       ).searchParams.get('state')!;
       const stateCookie = start.headers['set-cookie']![0]!.split(';')[0]!;
       const callback = `/auth/google/gmail/callback?state=${state}&code=synthetic-code`;
-      expect((await send(base, callback, 'GET', { Cookie: `${bob}; ${stateCookie}` })).status).toBe(
-        403,
-      );
+      const wrongUser = await send(base, callback, 'GET', { Cookie: `${bob}; ${stateCookie}` });
+      expect(wrongUser.status).toBe(403);
+      expect(wrongUser.body).toContain('Gmail connection not completed');
+      expect(wrongUser.body).not.toContain('synthetic-code');
       expect(
         (await send(base, callback, 'GET', { Cookie: `${alice}; ${stateCookie}` })).status,
       ).toBe(302);

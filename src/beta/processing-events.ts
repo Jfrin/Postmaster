@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import { AccessDeniedError } from './access.js';
+import type { StateWriteGuard } from '../state.js';
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   DatabaseSync: typeof DatabaseSyncType;
@@ -47,6 +48,7 @@ export class BetaProcessingEvents {
     now: number,
     event: ProcessingEvent,
     details: { status?: number; seen?: number; processed?: number; failed?: number } = {},
+    guard?: StateWriteGuard,
   ): void {
     if (!subject || subject.length > 255 || !Number.isSafeInteger(now) || now < 0)
       throw new Error('invalid processing event');
@@ -70,6 +72,7 @@ export class BetaProcessingEvents {
     const status = details.status;
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      guard?.(this.db, subject);
       this.db
         .prepare(
           `INSERT INTO beta_processing_events

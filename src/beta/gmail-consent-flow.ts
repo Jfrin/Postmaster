@@ -76,10 +76,10 @@ export class GmailConsentFlow {
   }
 
   /** Caller must authorize the signed-in owner; works even after testing access expires. */
-  async disconnect(subject: string): Promise<void> {
+  async disconnect(subject: string): Promise<boolean> {
     this.access.stopProcessing(subject);
     const token = this.vault.beginDisconnect(subject);
-    if (!token) return;
+    if (!token) return false;
     try {
       await this.provider.revoke(token);
     } catch {
@@ -87,6 +87,7 @@ export class GmailConsentFlow {
       throw new Error('Gmail revocation failed');
     }
     if (!this.vault.finishDisconnect(subject, token)) throw new Error('Gmail connection changed');
+    return true;
   }
 
   /** Explicit local deletion only; this does not revoke the Google grant or delete backups. */

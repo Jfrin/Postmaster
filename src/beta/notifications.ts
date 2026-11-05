@@ -110,7 +110,7 @@ export class NotificationWorker {
     if (this.active) return this.active;
     this.active = (async () => {
       const token = randomBytes(24).toString('base64url');
-      const notice = this.store.claimNotification(this.now(), token);
+      const notice = this.store.claimNotification(this.now(), token, false);
       if (!notice) return;
       let delivered = false;
       try {

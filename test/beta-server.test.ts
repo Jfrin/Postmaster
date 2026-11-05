@@ -161,7 +161,61 @@ describe('unwired beta request and admin server', () => {
     expect(page.status).toBe(200);
     const html = await page.text();
     expect(html).toContain('Testing access');
+    expect(html).toContain('/api/admin/delete-access');
+    expect(html).toContain('/api/admin/delete-application');
+    expect(html).toContain('Search applications');
+    expect(html).toContain('without a denial or cooldown');
     expect(() => new vm.Script(html.match(/<script>([\s\S]*?)<\/script>/)![1]!)).not.toThrow();
+  });
+
+  it('protects application deletion with admin identity and CSRF', async () => {
+    store.submitApplication('alice@example.com', now);
+    const body = { email: 'alice@example.com' };
+    expect((await request('/api/admin/delete-application', null, 'POST', body)).status).toBe(401);
+    for (const who of ['alice', 'wrongEmail', 'wrongSubject'])
+      expect((await request('/api/admin/delete-application', who, 'POST', body)).status).toBe(403);
+    expect(
+      (
+        await request('/api/admin/delete-application', 'admin', 'POST', body, {
+          'X-CSRF-Token': 'bad',
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (await request('/api/admin/delete-application', 'admin', 'POST', { ...body, extra: 1 }))
+        .status,
+    ).toBe(400);
+    expect(store.listApplications('admin-sub')).toHaveLength(1);
+    expect((await request('/api/admin/delete-application', 'admin', 'POST', body)).status).toBe(
+      200,
+    );
+    expect((await request('/api/admin/delete-application', 'admin', 'POST', body)).status).toBe(
+      404,
+    );
+    expect(store.listApplications('admin-sub')).toHaveLength(0);
+  });
+
+  it('protects testing-access deletion and allows an immediate new request', async () => {
+    store.requestAccess('alice-sub', 'alice@example.com', now);
+    store.approve('admin-sub', 'alice-sub', now + 60_000, 7, now);
+    const body = { subject: 'alice-sub' };
+    expect((await request('/api/admin/delete-access', null, 'POST', body)).status).toBe(401);
+    for (const who of ['alice', 'wrongEmail', 'wrongSubject'])
+      expect((await request('/api/admin/delete-access', who, 'POST', body)).status).toBe(403);
+    expect(
+      (await request('/api/admin/delete-access', 'admin', 'POST', body, { 'X-CSRF-Token': 'bad' }))
+        .status,
+    ).toBe(403);
+    expect(
+      (await request('/api/admin/delete-access', 'admin', 'POST', { ...body, extra: 1 })).status,
+    ).toBe(400);
+    expect(store.isActive('alice-sub', now)).toBe(true);
+    expect((await request('/api/admin/delete-access', 'admin', 'POST', body)).status).toBe(200);
+    expect(store.ownRequest('alice-sub')).toBeNull();
+    expect((await request('/api/admin/delete-access', 'admin', 'POST', body)).status).toBe(404);
+    expect((await request('/api/access/request', 'alice', 'POST', {})).status).toBe(200);
+    expect(store.ownRequest('alice-sub')?.status).toBe('pending');
+    expect(store.isActive('alice-sub', now)).toBe(false);
   });
 
   it('allows a user to request access only for their verified session identity', async () => {
@@ -187,7 +241,7 @@ describe('unwired beta request and admin server', () => {
     expect(self.request.subject).toBe('alice-sub');
   });
 
-  it('fails closed without notification delivery and preserves legacy applications and decisions', async () => {
+  it('accepts applications without notifications and preserves decisions', async () => {
     expect((await request('/apply', null)).status).toBe(200);
     expect((await request('/api/apply', null, 'POST', { email: 'bad' })).status).toBe(400);
     expect(
@@ -202,9 +256,8 @@ describe('unwired beta request and admin server', () => {
       ).status,
     ).toBe(403);
     expect((await request('/api/apply', null, 'POST', { email: 'Alice@gmail.com' })).status).toBe(
-      503,
+      200,
     );
-    expect(store.submitApplication('Alice@gmail.com', now)).toBe(true);
     expect((await request('/api/admin/applications', null)).status).toBe(401);
     expect((await request('/api/admin/applications', 'alice')).status).toBe(403);
     expect((await request('/api/admin/applications', 'wrongEmail')).status).toBe(403);
@@ -281,31 +334,8 @@ describe('unwired beta request and admin server', () => {
       pending: 1,
       failed: 0,
     });
-    expect(store.listApplications('admin-sub')).toHaveLength(0);
-    expect(
-      (
-        await request(
-          '/api/apply/verify',
-          null,
-          'POST',
-          { email: 'alice@gmail.com', code: '00000000' },
-          { Origin: 'https://evil.example.com' },
-        )
-      ).status,
-    ).toBe(403);
-    const notice = store.claimNotification(now, 'v'.repeat(24))!;
-    expect(notice.kind).toBe('verification');
-    store.finishNotification(notice.id, 'v'.repeat(24), now, true);
-    expect(
-      (
-        await request('/api/apply/verify', null, 'POST', {
-          email: 'alice@gmail.com',
-          code: notice.verificationCode,
-        })
-      ).status,
-    ).toBe(200);
     expect(store.listApplications('admin-sub')).toMatchObject([
-      { email: 'alice@gmail.com', emailVerifiedAt: now },
+      { email: 'alice@gmail.com', status: 'pending', emailVerifiedAt: null },
     ]);
     expect(
       (
@@ -340,7 +370,7 @@ describe('unwired beta request and admin server', () => {
     ).toBe(403);
   });
 
-  it('checks code expiry after reading the verification request body', async () => {
+  it('does not expose the former verification endpoint', async () => {
     store.requestApplicationVerification('alice@gmail.com', now);
     const notice = store.claimNotification(now, 'v'.repeat(24))!;
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -361,7 +391,7 @@ describe('unwired beta request and admin server', () => {
           code: notice.verificationCode,
         })
       ).status,
-    ).toBe(400);
+    ).not.toBe(200);
     expect(store.listApplications('admin-sub')).toHaveLength(0);
   });
 

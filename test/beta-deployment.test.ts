@@ -50,7 +50,8 @@ describe('beta deployment wiring', () => {
   it('bootstraps only the configured admin and starts on loopback, stopped', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'postmaster-deploy-'));
     const env = fixture(dir);
-    const { runtime, port, host } = await createDeploymentRuntime(env, fakeVault());
+    const vault = fakeVault();
+    const { runtime, port, host } = await createDeploymentRuntime(env, vault);
     const access = new BetaAccessStore(env.BETA_DATABASE_PATH!);
     try {
       expect(port).toBe(8081);
@@ -61,10 +62,10 @@ describe('beta deployment wiring', () => {
       expect(runtime.scheduler.status().online).toBe(true);
       expect(runtime.server.address()).toMatchObject({ address: '127.0.0.1' });
       await runtime.close();
-      const again = await createDeploymentRuntime(env, fakeVault());
+      const again = await createDeploymentRuntime(env, vault);
       await again.runtime.close();
       await expect(
-        createDeploymentRuntime({ ...env, BETA_ADMIN_SUBJECT: 'other' }, fakeVault()),
+        createDeploymentRuntime({ ...env, BETA_ADMIN_SUBJECT: 'other' }, vault),
       ).rejects.toThrow('already bootstrapped');
     } finally {
       await runtime.close();

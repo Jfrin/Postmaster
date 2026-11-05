@@ -73,6 +73,9 @@ describe('identity login integration with a simulated Google provider', () => {
       for (const href of ['/beta/apply', '/beta', '/demo', '/privacy', '/terms'])
         expect(landing.body).toContain(`href="${href}"`);
       expect(landing.body).not.toContain('/beta/admin');
+      expect(landing.body).toContain('Azure OpenAI');
+      expect(landing.body).toContain('Dry run records decisions without changing Gmail');
+      expect(landing.body).toContain('does not connect to Gmail or use Azure OpenAI');
       const privacy = await send(base, '/privacy');
       expect(privacy.status).toBe(200);
       expect(privacy.headers['content-type']).toContain('text/html');
@@ -91,6 +94,9 @@ describe('identity login integration with a simulated Google provider', () => {
       const login = await send(base, '/beta');
       expect(login.status).toBe(200);
       expect(login.body).toContain('href="/beta/auth/google/start"');
+      expect(login.body).toContain('Signing in does not connect Gmail or start processing');
+      expect(login.body).toContain('Live actions require confirmation');
+      expect(login.body).toContain('href="/beta/apply"');
       expect(login.body).toContain('href="/privacy"');
       expect(login.body).toContain('href="/terms"');
       expect((await send(base, '/beta/apply')).body).toContain('href="/privacy"');

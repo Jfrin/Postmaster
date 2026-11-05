@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { BETA_INTAKE_PAGE } from '../src/beta/intake-page.js';
 
 describe('public beta application page', () => {
-  it('requests a code and submits it in a separate step', async () => {
+  it('submits the application without a verification step', async () => {
     const handlers: Record<
       string,
       (event: { preventDefault(): void; currentTarget: unknown }) => Promise<void>
@@ -17,21 +17,13 @@ describe('public beta application page', () => {
       reset() {},
     });
     const apply = form('apply');
-    const verify = form('verify');
     const email = { value: ' applicant@gmail.com ' };
-    const verifyEmail = { value: '' };
-    const code = { value: '12345678' };
     const message = { textContent: '' };
-    const verified = { textContent: '' };
     const link = { href: '' };
     const elements: Record<string, unknown> = {
       '#apply': apply,
-      '#verify': verify,
       '#email': email,
-      '#verify-email': verifyEmail,
-      '#code': code,
       '#message': message,
-      '#verify-message': verified,
       '#signin': link,
     };
     const calls: { url: string; body: unknown }[] = [];
@@ -48,13 +40,8 @@ describe('public beta application page', () => {
     await handlers.apply!({ preventDefault() {}, currentTarget: apply });
     expect(calls[0]).toEqual({ url: '/beta/api/apply', body: { email: 'applicant@gmail.com' } });
     expect(message.textContent).toContain('If eligible');
-    expect(verifyEmail.value).toBe('applicant@gmail.com');
-    await handlers.verify!({ preventDefault() {}, currentTarget: verify });
-    expect(calls[1]).toEqual({
-      url: '/beta/api/apply/verify',
-      body: { email: 'applicant@gmail.com', code: '12345678' },
-    });
-    expect(verified.textContent).toContain('applications are submitted for review');
+    expect(calls).toHaveLength(1);
+    expect(BETA_INTAKE_PAGE).not.toContain('verification code');
     expect(button.disabled).toBe(false);
     expect(link.href).toBe('/beta/');
   });

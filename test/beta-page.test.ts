@@ -59,6 +59,7 @@ describe('beta dashboard', () => {
       configAvailable: true,
       processingOnline: true,
       processingRequested: false,
+      dataDeletionAvailable: true,
       usage: { attempts: 2, limit: 100, processed: 1, failed: 0 },
     };
     const config = { settings: { dry_run: true }, categories: [], rules: [] };
@@ -82,13 +83,17 @@ describe('beta dashboard', () => {
       createElement: (tag: string) => new Element(tag),
       createTextNode: (text: string) => Object.assign(new Element('#text'), { textContent: text }),
     };
+    const calls: { url: string; options: { method?: string; body?: string } }[] = [];
     const script = BETA_PAGE.replace('__BETA_BASE_PATH__', '"/beta"').match(
       /<script>([\s\S]*?)<\/script>/,
     )![1]!;
     const context = vm.createContext({
       document,
       window: { addEventListener() {} },
-      fetch: async (url: string) => ({ ok: true, json: async () => replies[url] }),
+      fetch: async (url: string, options: { method?: string; body?: string }) => {
+        calls.push({ url, options });
+        return { ok: true, json: async () => replies[url] ?? {} };
+      },
       setInterval() {},
       setTimeout() {},
       clearTimeout() {},
@@ -149,6 +154,21 @@ describe('beta dashboard', () => {
     expect(elements.main!.text()).toContain('Used today: 2');
     expect(elements.main!.text()).toContain('Remaining: 98');
     expect(elements.main!.text()).toContain('Approval and Start are still required');
+    expect(elements.main!.text()).toContain('Delete email content data');
+    expect(elements.main!.text()).toContain('Delete decision cache data');
+    expect(elements.main!.text()).toContain('Delete other account data');
+    expect(elements.main!.text()).toContain('Delete all data');
+    expect(elements.main!.text()).toContain('Delete account');
+    expect(elements.main!.text()).toContain('Existing backups are not erased');
+    expect(elements.main!.text()).toContain('Categories and identifiers can still be sensitive');
+    const findButton = (node: Element, text: string): Element | undefined =>
+      node.tag === 'button' && node.text() === text
+        ? node
+        : node.children.map((child) => findButton(child, text)).find(Boolean);
+    await findButton(elements.main!, 'Delete email content data')!.listeners.click!();
+    expect(
+      JSON.parse(calls.find((call) => call.url === '/beta/api/data/delete')!.options.body!),
+    ).toEqual({ scope: 'content', confirm: true });
     session.usage.attempts = 3;
     await vm.runInContext('refresh()', context);
     expect(elements.main!.text()).toContain('Used today: 3');
@@ -170,6 +190,8 @@ describe('beta dashboard', () => {
         'requests',
         'applications',
         'application-error',
+        'application-search',
+        'application-pages',
         'notification-status',
       ].map((id) => [id, new Element('div')]),
     );

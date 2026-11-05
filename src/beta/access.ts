@@ -13,6 +13,7 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
 };
 
 export const DEFAULT_DAILY_READ_LIMIT = 100;
+export const DENIAL_REAPPLICATION_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 export class AccessDeniedError extends Error {}
 export class DailyReadLimitError extends Error {}
@@ -95,7 +96,8 @@ export class BetaAccessStore {
   private readonly db: DatabaseSyncType;
   private readonly verificationKey: Buffer | null;
 
-  constructor(path: string, verificationKey?: Uint8Array) {
+  constructor(path: string, verificationKey?: Uint8Array, migrationNow = Date.now()) {
+    checkTime(migrationNow);
     if (verificationKey && verificationKey.byteLength !== 32)
       throw new Error('invalid verification key');
     this.verificationKey = verificationKey
@@ -183,6 +185,14 @@ export class BetaAccessStore {
       }[];
       if (!applicationColumns.some((column) => column.name === 'email_verified_at'))
         this.db.exec('ALTER TABLE beta_applications ADD COLUMN email_verified_at INTEGER');
+      if (!applicationColumns.some((column) => column.name === 'denied_at'))
+        this.db.exec('ALTER TABLE beta_applications ADD COLUMN denied_at INTEGER');
+      // Older decisions have no reliable denial time. Give them a full cooldown from migration.
+      this.db
+        .prepare(
+          "UPDATE beta_applications SET denied_at = ? WHERE status = 'denied' AND denied_at IS NULL",
+        )
+        .run(migrationNow);
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
@@ -281,11 +291,37 @@ export class BetaAccessStore {
     return true;
   }
 
-  /** Internal legacy entry point; public intake requires verification. */
+  /** Reapplications after denial return to review, never directly to approved access. */
   submitApplication(email: string, now: number, notify = false): boolean {
     checkTime(now);
     return this.transaction(() => {
       if (!this.consumeApplicationRate(now)) return false;
+      const existing = this.db
+        .prepare('SELECT status, denied_at FROM beta_applications WHERE email = ? COLLATE NOCASE')
+        .get(email) as { status: BetaApplication['status']; denied_at: number | null } | undefined;
+      if (existing?.status === 'denied') {
+        if (existing.denied_at === null) {
+          this.db
+            .prepare(
+              "UPDATE beta_applications SET denied_at = ? WHERE email = ? COLLATE NOCASE AND status = 'denied' AND denied_at IS NULL",
+            )
+            .run(now, email);
+          return true;
+        }
+        if (now < existing.denied_at + DENIAL_REAPPLICATION_COOLDOWN_MS) return true;
+        this.db
+          .prepare(
+            "UPDATE beta_applications SET status = 'pending', requested_at = ?, expires_at = NULL, denied_at = NULL WHERE email = ? COLLATE NOCASE AND status = 'denied'",
+          )
+          .run(now, email);
+        if (notify)
+          this.db
+            .prepare(
+              "INSERT INTO beta_notification_outbox (email, kind, created_at, next_attempt) VALUES (?, 'application', ?, ?)",
+            )
+            .run(email.toLowerCase(), now, now);
+        return true;
+      }
       return this.insertApplication(email, now, notify);
     });
   }
@@ -399,6 +435,32 @@ export class BetaAccessStore {
     }));
   }
 
+  /** Delete an application and its bound testing access, without creating a denial. */
+  deleteApplication(actor: string, email: string, now: number): boolean {
+    checkTime(now);
+    return this.transaction(() => {
+      this.requireAdmin(actor);
+      const app = this.db
+        .prepare('SELECT subject FROM beta_applications WHERE email = ? COLLATE NOCASE')
+        .get(email) as { subject: string | null } | undefined;
+      if (!app) return false;
+      if (app.subject) {
+        invalidateConsent(this.db, app.subject);
+        this.stopWithinTransaction(app.subject);
+        this.db.prepare('DELETE FROM beta_access_requests WHERE subject = ?').run(app.subject);
+        this.audit(actor, app.subject, 'deleted', now, null, null);
+      }
+      // A leased notification may already be in flight and cannot be recalled.
+      this.db
+        .prepare(
+          'DELETE FROM beta_notification_outbox WHERE email = ? COLLATE NOCASE AND (lease_until IS NULL OR lease_until <= ?)',
+        )
+        .run(email, now);
+      this.db.prepare('DELETE FROM beta_applications WHERE email = ? COLLATE NOCASE').run(email);
+      return true;
+    });
+  }
+
   decideApplication(
     actor: string,
     email: string,
@@ -419,14 +481,24 @@ export class BetaAccessStore {
     this.transaction(() => {
       this.requireAdmin(actor);
       const app = this.db
-        .prepare('SELECT subject, status FROM beta_applications WHERE email = ? COLLATE NOCASE')
-        .get(email) as { subject: string | null; status: BetaApplication['status'] } | undefined;
+        .prepare(
+          'SELECT subject, status, denied_at FROM beta_applications WHERE email = ? COLLATE NOCASE',
+        )
+        .get(email) as
+        | { subject: string | null; status: BetaApplication['status']; denied_at: number | null }
+        | undefined;
       if (!app) throw new Error('application not found');
       this.db
         .prepare(
-          'UPDATE beta_applications SET status = ?, expires_at = ?, daily_limit = ? WHERE email = ? COLLATE NOCASE',
+          'UPDATE beta_applications SET status = ?, expires_at = ?, daily_limit = ?, denied_at = ? WHERE email = ? COLLATE NOCASE',
         )
-        .run(status, status === 'approved' ? expiresAt : null, dailyLimit, email);
+        .run(
+          status,
+          status === 'approved' ? expiresAt : null,
+          dailyLimit,
+          status === 'denied' ? (app.status === 'denied' ? (app.denied_at ?? now) : now) : null,
+          email,
+        );
       if (notify && app.status !== status) {
         // A later decision supersedes older unsent decisions. An in-flight send cannot be recalled.
         this.db
@@ -474,6 +546,7 @@ export class BetaAccessStore {
   claimNotification(
     now: number,
     token: string,
+    includeVerification = true,
   ): {
     id: number;
     email: string;
@@ -510,6 +583,7 @@ export class BetaAccessStore {
           }
         | undefined;
       if (!row) {
+        if (!includeVerification) return null;
         const verification = this.db
           .prepare(
             `SELECT id, email, nonce, expires_at, attempts FROM beta_application_verifications
@@ -591,8 +665,18 @@ export class BetaAccessStore {
     }
   }
 
-  notificationCounts(actor: string): { pending: number; failed: number } {
+  notificationCounts(
+    actor: string,
+    includeVerification = true,
+  ): { pending: number; failed: number } {
     this.requireAdmin(actor);
+    if (!includeVerification)
+      return this.db
+        .prepare(
+          `SELECT COALESCE(SUM(failed = 0), 0) AS pending,
+          COALESCE(SUM(failed = 1), 0) AS failed FROM beta_notification_outbox`,
+        )
+        .get() as { pending: number; failed: number };
     return this.db
       .prepare(
         `SELECT (SELECT count(*) FROM beta_notification_outbox WHERE failed = 0) +
@@ -603,8 +687,15 @@ export class BetaAccessStore {
       .get() as { pending: number; failed: number };
   }
 
-  failedNotifications(actor: string): { id: number; email: string; kind: string }[] {
+  failedNotifications(
+    actor: string,
+    includeVerification = true,
+  ): { id: number; email: string; kind: string }[] {
     this.requireAdmin(actor);
+    if (!includeVerification)
+      return this.db
+        .prepare('SELECT id, email, kind FROM beta_notification_outbox WHERE failed = 1 LIMIT 100')
+        .all() as unknown as { id: number; email: string; kind: string }[];
     return this.db
       .prepare(
         `SELECT id, email, kind FROM beta_notification_outbox WHERE failed = 1
@@ -793,6 +884,43 @@ export class BetaAccessStore {
       invalidateConsent(this.db, subject);
       this.stopWithinTransaction(subject);
       this.audit(actor, subject, 'denied', now, null, null);
+    });
+  }
+
+  /** Remove testing access without treating the removal as a denial. */
+  deleteAccess(actor: string, subject: string, now: number): boolean {
+    checkSubject(subject);
+    checkTime(now);
+    return this.transaction(() => {
+      this.requireAdmin(actor);
+      const account = this.account(subject);
+      if (!account) return false;
+      const applications = this.db
+        .prepare(
+          `SELECT email FROM beta_applications WHERE subject = ?
+            OR (subject IS NULL AND email = ? COLLATE NOCASE)`,
+        )
+        .all(subject, account.email) as { email: string }[];
+      for (const application of applications) {
+        this.db
+          .prepare(
+            `UPDATE beta_applications SET status = 'pending', expires_at = NULL,
+              denied_at = NULL, subject = NULL WHERE email = ? COLLATE NOCASE`,
+          )
+          .run(application.email);
+        // Already leased notices may be in flight and cannot be recalled.
+        this.db
+          .prepare(
+            `DELETE FROM beta_notification_outbox WHERE email = ? COLLATE NOCASE
+              AND kind != 'application' AND (lease_until IS NULL OR lease_until <= ?)`,
+          )
+          .run(application.email, now);
+      }
+      invalidateConsent(this.db, subject);
+      this.stopWithinTransaction(subject);
+      this.db.prepare('DELETE FROM beta_access_requests WHERE subject = ?').run(subject);
+      this.audit(actor, subject, 'deleted', now, null, null);
+      return true;
     });
   }
 

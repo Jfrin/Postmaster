@@ -8,6 +8,8 @@ import {
   type BetaAccessStore,
 } from './access.js';
 import type { BetaActivityStore } from './activity.js';
+import type { BetaDataPrivacy } from './data-privacy.js';
+import { BetaSessionStore } from './session-store.js';
 import type { GmailConsentFlow } from './gmail-consent-flow.js';
 import { GmailConsentStateStore } from './gmail-consent-state.js';
 import {
@@ -21,7 +23,12 @@ import { BETA_ADMIN_PAGE } from './admin-page.js';
 import { BETA_INTAKE_PAGE } from './intake-page.js';
 import { PRIVACY_PAGE } from './privacy-page.js';
 import { TERMS_PAGE } from './terms-page.js';
-import { adminAccessPage, LANDING_PAGE, signInPage } from './welcome-page.js';
+import {
+  adminAccessPage,
+  gmailConsentErrorPage,
+  LANDING_PAGE,
+  signInPage,
+} from './welcome-page.js';
 import type { BetaProcessingEvents } from './processing-events.js';
 import { ConfigLiveConfirmationError, type BetaUserConfigStore } from './user-config.js';
 
@@ -48,6 +55,7 @@ export interface BetaServerOptions {
   userConfigStore?: BetaUserConfigStore;
   activityStore?: BetaActivityStore;
   processingEvents?: BetaProcessingEvents;
+  dataPrivacy?: BetaDataPrivacy;
   /** Must reflect the trusted scheduler's actual online status. */
   processingOnline?: () => boolean;
   notificationsEnabled?: boolean;
@@ -75,9 +83,6 @@ const ApplicationEmail = z
   .max(254)
   .regex(/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+$/);
 const Application = z.object({ email: ApplicationEmail }).strict();
-const ApplicationVerification = z
-  .object({ email: ApplicationEmail, code: z.string().regex(/^\d{8}$/) })
-  .strict();
 const ApplicationDecision = z
   .object({
     email: z.string().email().max(254),
@@ -87,6 +92,9 @@ const ApplicationDecision = z
   })
   .strict();
 const Start = z.object({ confirmLive: z.boolean().optional() }).strict();
+const DeleteData = z
+  .object({ scope: z.enum(['content', 'decisions', 'other', 'all']), confirm: z.literal(true) })
+  .strict();
 class RequestTooLargeError extends Error {}
 class SessionExpiredError extends Error {}
 
@@ -172,30 +180,14 @@ async function handle(
       return send(res, 415, { error: 'application/json required' });
     const input = Application.safeParse(await readJson(req, 2048));
     if (!input.success) return send(res, 400, { error: 'invalid application' });
-    if (!options.notificationsEnabled || !options.store.canVerifyApplications())
-      return send(res, 503, { error: 'application verification unavailable' });
     if (
-      !options.store.requestApplicationVerification(input.data.email, options.now?.() ?? Date.now())
-    )
-      return send(res, 429, { error: 'try again later' });
-    return send(res, 200, { ok: true });
-  }
-  if (method === 'POST' && path === '/api/apply/verify') {
-    if (req.headers.origin !== options.origin) return send(res, 403, { error: 'forbidden' });
-    if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? ''))
-      return send(res, 415, { error: 'application/json required' });
-    const input = ApplicationVerification.safeParse(await readJson(req, 2048));
-    if (!input.success) return send(res, 400, { error: 'invalid or expired verification code' });
-    if (!options.notificationsEnabled || !options.store.canVerifyApplications())
-      return send(res, 503, { error: 'application verification unavailable' });
-    if (
-      !options.store.verifyApplication(
+      !options.store.submitApplication(
         input.data.email,
-        input.data.code,
         options.now?.() ?? Date.now(),
+        !!options.notificationsEnabled,
       )
     )
-      return send(res, 400, { error: 'invalid or expired verification code' });
+      return send(res, 429, { error: 'try again later' });
     return send(res, 200, { ok: true });
   }
   if (method === 'GET' && path === '/auth/google/start' && options.identityFlow) {
@@ -258,6 +250,18 @@ async function handle(
     session.csrfToken.length < 32 ||
     session.csrfToken.length > 256
   ) {
+    if (method === 'GET' && path === '/auth/google/gmail/callback' && options.gmailConsentFlow) {
+      res.setHeader('Set-Cookie', GmailConsentStateStore.clearCookie());
+      return send(
+        res,
+        401,
+        gmailConsentErrorPage(
+          basePath,
+          'Your beta session is missing or expired. Sign in again before connecting Gmail.',
+        ),
+        true,
+      );
+    }
     if (method === 'GET' && path === '/admin')
       return send(res, 401, adminAccessPage(basePath, false), true);
     if (method === 'GET' && path === '/' && options.identityFlow) {
@@ -268,8 +272,15 @@ async function handle(
   if (method === 'GET' && path === '/auth/google/gmail/callback' && options.gmailConsentFlow) {
     const states = url.searchParams.getAll('state');
     const codes = url.searchParams.getAll('code');
-    if (states.length !== 1 || codes.length !== 1)
-      return send(res, 400, { error: 'invalid Gmail consent response' });
+    if (states.length !== 1 || codes.length !== 1) {
+      res.setHeader('Set-Cookie', GmailConsentStateStore.clearCookie());
+      return send(
+        res,
+        400,
+        gmailConsentErrorPage(basePath, 'The Google consent response was cancelled or invalid.'),
+        true,
+      );
+    }
     try {
       await options.gmailConsentFlow.finish(
         session.subject,
@@ -286,7 +297,15 @@ async function handle(
       return;
     } catch {
       res.setHeader('Set-Cookie', GmailConsentStateStore.clearCookie());
-      return send(res, 403, { error: 'Gmail connection failed' });
+      return send(
+        res,
+        403,
+        gmailConsentErrorPage(
+          basePath,
+          'We could not complete this Gmail connection. The request may have expired or used a different Google account.',
+        ),
+        true,
+      );
     }
   }
   if (method !== 'GET') {
@@ -344,10 +363,57 @@ async function handle(
       gmailReady: options.gmailConsentFlow?.isReady(session.subject) ?? false,
       configAvailable: !!options.userConfigStore,
       activityAvailable: !!options.activityStore,
+      dataDeletionAvailable: !!options.dataPrivacy,
       processingOnline: options.processingOnline?.() ?? false,
       processingRequested: store.processingRequested(session.subject),
       usage: store.ownUsage(session.subject, now),
     });
+  }
+  if (method === 'POST' && path === '/api/data/delete' && options.dataPrivacy) {
+    const input = DeleteData.safeParse(await readAuthorizedJson(options, req, session));
+    if (!input.success) return send(res, 400, { error: 'invalid deletion request' });
+    options.dataPrivacy.delete(
+      session.subject,
+      session.verifiedEmail,
+      input.data.scope,
+      options.now?.() ?? Date.now(),
+    );
+    return send(res, 200, { ok: true });
+  }
+  if (
+    method === 'POST' &&
+    path === '/api/account/delete' &&
+    options.dataPrivacy &&
+    options.gmailConsentFlow
+  ) {
+    const input = z
+      .object({ confirm: z.literal(true) })
+      .strict()
+      .safeParse(await readAuthorizedJson(options, req, session));
+    if (!input.success) return send(res, 400, { error: 'invalid deletion request' });
+    let revoked: boolean;
+    try {
+      revoked = await options.gmailConsentFlow.disconnect(session.subject);
+    } catch {
+      return send(res, 503, {
+        error: 'Gmail revocation failed or is in progress; account was not deleted',
+      });
+    }
+    const current = await options.authenticate(req);
+    if (!current || current.subject !== session.subject || current.csrfToken !== session.csrfToken)
+      return send(res, 401, { error: 'session expired; account was not deleted' });
+    try {
+      options.dataPrivacy.delete(
+        session.subject,
+        session.verifiedEmail,
+        'account',
+        options.now?.() ?? Date.now(),
+      );
+    } catch {
+      return send(res, 409, { error: 'Account was not deleted; check Gmail connection and retry' });
+    }
+    res.setHeader('Set-Cookie', BetaSessionStore.clearCookie());
+    return send(res, 200, { ok: true, gmailRevocation: revoked ? 'requested' : 'no-local-token' });
   }
   if (method === 'POST' && path === '/api/access/request') {
     if (!Request.safeParse(await readAuthorizedJson(options, req, session)).success)
@@ -436,11 +502,18 @@ async function handle(
   }
   if (method === 'GET' && path === '/api/admin/applications')
     return send(res, 200, store.listApplications(session.subject));
+  if (method === 'POST' && path === '/api/admin/delete-application') {
+    const input = Application.safeParse(await readAuthorizedJson(options, req, session));
+    if (!input.success) return send(res, 400, { error: 'invalid application' });
+    if (!store.deleteApplication(session.subject, input.data.email, now))
+      return send(res, 404, { error: 'application not found' });
+    return send(res, 200, { ok: true });
+  }
   if (method === 'GET' && path === '/api/admin/notifications')
     return send(res, 200, {
       enabled: !!options.notificationsEnabled,
-      ...store.notificationCounts(session.subject),
-      failures: store.failedNotifications(session.subject),
+      ...store.notificationCounts(session.subject, false),
+      failures: store.failedNotifications(session.subject, false),
     });
   if (method === 'POST' && path === '/api/admin/notifications/retry') {
     const input = z
@@ -449,7 +522,7 @@ async function handle(
           .number()
           .int()
           .safe()
-          .refine((id) => id !== 0),
+          .refine((id) => id > 0),
       })
       .strict()
       .safeParse(await readAuthorizedJson(options, req, session));
@@ -499,6 +572,13 @@ async function handle(
     const input = Denial.safeParse(await readAuthorizedJson(options, req, session));
     if (!input.success) return send(res, 400, { error: 'invalid request' });
     store.deny(session.subject, input.data.subject, options.now?.() ?? Date.now());
+    return send(res, 200, { ok: true });
+  }
+  if (method === 'POST' && path === '/api/admin/delete-access') {
+    const input = Denial.safeParse(await readAuthorizedJson(options, req, session));
+    if (!input.success) return send(res, 400, { error: 'invalid request' });
+    if (!store.deleteAccess(session.subject, input.data.subject, options.now?.() ?? Date.now()))
+      return send(res, 404, { error: 'request not found' });
     return send(res, 200, { ok: true });
   }
   return send(res, 404, { error: 'not found' });

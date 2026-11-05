@@ -38,15 +38,13 @@ describe('isolated mock demo', () => {
   it('serves a synthetic-only page with valid script', async () => {
     const html = await (await fetch(base)).text();
     expect(html).toContain('No Gmail connection');
-    expect(html).toContain('Activity and settings below are examples');
-    expect(html).toContain('Start</button>');
-    expect(html).toContain('disabled title="Not available in the demo"');
-    expect(html).toContain('/oauth2/sign_out');
+    expect(html).toContain('All activity, account details and usage are examples');
+    expect(html).toContain('Start and account actions are unavailable');
+    expect(html).not.toContain('/oauth2/sign_out');
     expect(html).toContain('href="/">Home</a>');
-    for (const id of ['activity', 'categories', 'rules', 'settings', 'try']) {
-      expect(html).toContain(`aria-controls="${id}"`);
-      expect(html).toContain(`id="${id}"`);
-    }
+    expect(html).toContain('Processing log');
+    expect(html).toContain('Recent decisions by category');
+    expect(html).toContain("['access','Account']");
     const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new vm.Script(script!)).not.toThrow();
@@ -60,61 +58,117 @@ describe('isolated mock demo', () => {
     }
   });
 
-  it('switches demo sections and sends only synthetic try-it input to the classifier', async () => {
+  it('renders beta sections with isolated synthetic state and a separate mock classifier', async () => {
     const html = await (await fetch(base)).text();
     const script = html.match(/<script>([\s\S]*?)<\/script>/)![1]!;
-    const ids = ['activity', 'categories', 'rules', 'settings', 'try'];
-    const panels = Object.fromEntries(ids.map((id, index) => [id, { hidden: index !== 0 }]));
-    const tabs = ids.map((id) => ({
-      attrs: { 'aria-controls': id, 'aria-pressed': id === 'activity' ? 'true' : 'false' },
-      click: () => {},
-      addEventListener(_event: string, fn: () => void) {
-        this.click = fn;
-      },
-      getAttribute(key: 'aria-controls' | 'aria-pressed') {
-        return this.attrs[key];
-      },
-      setAttribute(key: 'aria-pressed', value: string) {
-        this.attrs[key] = value;
-      },
-    }));
-    let submit: (event: { preventDefault: () => void }) => Promise<void> = async () => {};
-    const result = { textContent: '' };
-    const elements: Record<string, unknown> = {
-      ...panels,
-      form: { addEventListener: (_event: string, fn: typeof submit) => (submit = fn) },
-      result,
-      from: { value: 'orders@example.com' },
-      subject: { value: 'Your order shipped' },
-      body: { value: 'Synthetic order.' },
-    };
+    class Element {
+      nodeType = 1;
+      children: Element[] = [];
+      textContent = '';
+      className = '';
+      hidden = false;
+      disabled = false;
+      value = '';
+      checked = false;
+      style: Record<string, string> = {};
+      listeners: Record<string, (event?: { preventDefault: () => void }) => unknown> = {};
+      onclick?: () => Promise<void>;
+      constructor(public tag: string) {}
+      append(...children: Element[]) {
+        this.children.push(...children);
+      }
+      replaceChildren(...children: Element[]) {
+        this.children = children;
+      }
+      setAttribute(key: string, value: string) {
+        if (key === 'id') elements[value] = this;
+      }
+      addEventListener(name: string, fn: (event?: { preventDefault: () => void }) => unknown) {
+        this.listeners[name] = fn;
+      }
+      text(): string {
+        return this.textContent + this.children.map((child) => child.text()).join('');
+      }
+    }
+    const elements: Record<string, Element> = Object.fromEntries(
+      [
+        'mode',
+        'run',
+        'runbtn',
+        'dirty',
+        'save',
+        'logout',
+        'setup',
+        'tabs',
+        'main',
+        'toast',
+        'overview',
+      ].map((id) => [id, new Element('div')]),
+    );
     const calls: { path: string; options: RequestInit }[] = [];
-    vm.runInNewContext(script, {
+    const context = vm.createContext({
       document: {
-        querySelectorAll: () => tabs,
-        getElementById: (id: string) => elements[id],
+        querySelector: (selector: string) => elements[selector.slice(1)],
+        createElement: (tag: string) => new Element(tag),
+        createTextNode: (text: string) =>
+          Object.assign(new Element('#text'), { textContent: text }),
+      },
+      window: { addEventListener() {} },
+      setInterval() {},
+      setTimeout() {},
+      clearTimeout() {},
+      confirm: () => true,
+      location: {
+        assign() {
+          throw new Error('unexpected navigation');
+        },
+        reload() {
+          throw new Error('unexpected reload');
+        },
       },
       fetch: async (path: string, options: RequestInit) => {
         calls.push({ path, options });
+        if (path !== '/api/try') throw new Error('unexpected real API call');
         return {
           ok: true,
           json: async () => ({ category: 'receipts', confidence: 0.9, reason: 'Mock' }),
         };
       },
     });
-    tabs[4]!.click();
-    expect(panels.try!.hidden).toBe(false);
-    expect(panels.activity!.hidden).toBe(true);
-    expect(tabs[4]!.attrs['aria-pressed']).toBe('true');
-    await submit({ preventDefault: () => {} });
+    vm.runInContext(script, context);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(elements.main!.text()).toContain('Your order shipped');
+    expect(elements.overview!.text()).toContain('Gmail read attempts: 6 / 100');
+    expect(elements.runbtn!.disabled).toBe(true);
+    expect(elements.logout!.disabled).toBe(true);
+    for (const [name, content] of [
+      ['Categories', 'Gmail label'],
+      ['Rules', 'Checked top to bottom'],
+      ['Settings', 'Dry run:'],
+      ['Account', 'No Gmail connection in the demo.'],
+    ]) {
+      elements.tabs!.children.find((item) => item.text() === name)!.listeners.click!();
+      expect(elements.main!.text()).toContain(content);
+    }
+    vm.runInContext("cfg.settings.label_prefix='TEST/';touch()", context);
+    await elements.save!.onclick!();
+    expect(vm.runInContext('demoConfig.settings.label_prefix', context)).toBe('TEST/');
+    expect(calls).toHaveLength(0);
+    await expect(vm.runInContext("api('/api/gmail/connect','POST')", context)).rejects.toThrow(
+      'Unavailable',
+    );
+    elements.tabs!.children.find((item) => item.text() === 'Try it')!.listeners.click!();
+    const find = (node: Element, tag: string): Element | undefined =>
+      node.tag === tag ? node : node.children.map((child) => find(child, tag)).find(Boolean);
+    await find(elements.main!, 'form')!.listeners.submit!({ preventDefault() {} });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.path).toBe('/api/try');
     expect(JSON.parse(String(calls[0]!.options.body))).toEqual({
       from: 'orders@example.com',
       subject: 'Your order shipped',
-      body: 'Synthetic order.',
+      body: 'Your synthetic order has shipped.',
     });
-    expect(result.textContent).toContain('Category: receipts\nConfidence: 90%');
+    expect(elements['demo-result']!.textContent).toContain('Category: receipts · Confidence: 90%');
   });
 
   it('classifies a synthetic message without persistence', async () => {

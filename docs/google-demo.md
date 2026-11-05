@@ -1,5 +1,7 @@
 # Allowlisted Google login for the synthetic demo
 
+This describes the earlier allowlisted setup. The owner subsequently made the synthetic demo public through narrowly scoped Caddy routes; see `docs/plan.md` for the live configuration and remaining abuse-control work. The auth proxy remains in place for other routes.
+
 This separate demo has no Gmail client, poller, admin API, Azure model, or persistent message store. Do not connect it to real inboxes or add Gmail scopes. It is not the multi-user product described in `docs/plan.md`.
 
 **Do not expose it yet:** the proxy configuration and a real Google login must be tested end to end, including denied accounts and spoofed headers. This repository does not create Google credentials, authorize testers, provision HTTPS or modify Azure firewall rules automatically.

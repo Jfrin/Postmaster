@@ -49,10 +49,12 @@ export class BetaActivityStore {
       if (!active) throw new AccessDeniedError('access not active');
       const rows = this.db
         .prepare(
-          `SELECT message_id, category, confidence, source, reason, applied, created_at, sender, subject
-        FROM decisions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
+          `SELECT d.message_id, d.category, d.confidence, d.source, d.reason, d.applied, d.created_at,
+          c.sender, c.subject FROM decisions AS d LEFT JOIN beta_email_content AS c
+          ON c.user_id=d.user_id AND c.message_id=d.message_id AND c.expires_at > ?
+        WHERE d.user_id = ? ORDER BY d.created_at DESC LIMIT ?`,
         )
-        .all(subject, limit) as unknown as DecisionRow[];
+        .all(now, subject, limit) as unknown as DecisionRow[];
       this.db.exec('COMMIT');
       return rows;
     } catch (error) {

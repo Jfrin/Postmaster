@@ -1,55 +1,52 @@
-/** Separate synthetic-only interface; never embeds the administrative dashboard. */
-export const DEMO_PAGE = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Postmaster demo</title>
-<style>
-:root{--bg:#f6f7f9;--card:#fff;--text:#1a1d21;--muted:#667085;--line:#e4e7ec;--accent:#2563eb}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
-header{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var(--card);border-bottom:1px solid var(--line)}
-header h1{font-size:16px;margin:0}.grow{flex:1}.badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;border:1px solid currentColor;color:#b45309}
-.status{color:var(--muted);font-weight:500}a{color:var(--accent)}nav{display:flex;gap:4px;padding:10px 20px 0;overflow-x:auto}
-nav button{background:none;border:0;border-bottom:2px solid transparent;padding:8px 12px;color:var(--muted);cursor:pointer;font:inherit;white-space:nowrap}
-nav button[aria-pressed="true"]{color:var(--text);border-color:var(--accent);font-weight:600}
-main{padding:16px 20px 60px;max-width:1100px}.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px}
-.notice{color:#475467}.notice strong{color:var(--text)}.hint{font-size:12px;color:var(--muted);margin:4px 0 0}
-.btn{background:var(--accent);color:#fff;border:0;border-radius:7px;padding:7px 14px;font:inherit;cursor:pointer}.btn:disabled{opacity:.4;cursor:not-allowed}
-.chip{display:inline-block;padding:2px 8px;border-radius:99px;background:var(--bg);border:1px solid var(--line);font-size:12px;margin:0 6px 6px 0}
-.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:680px}th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:12px;color:var(--muted);font-weight:600}tbody tr:last-child td{border-bottom:0}
-label{display:block;font-size:12px;color:var(--muted);margin:12px 0 4px}input,textarea{font:inherit;color:var(--text);background:var(--bg);border:1px solid #cbd2dc;border-radius:7px;padding:8px;width:100%}textarea{resize:vertical;min-height:110px}form .btn{margin-top:14px}
-h2{font-size:16px;margin:0 0 8px}#result{white-space:pre-wrap;margin:14px 0 0}#result:empty{display:none}[hidden]{display:none!important}
-@media(max-width:600px){header{flex-wrap:wrap;gap:8px}header .grow{flex-basis:30%}main{padding:14px}nav{padding-left:14px}header{padding:12px 14px}}
-</style></head><body>
-<header><h1>Postmaster</h1><span class="badge">DEMO</span><span class="grow"></span><a href="/">Home</a><span class="badge status">Synthetic preview</span><button class="btn" disabled title="Not available in the demo">Start</button><button class="btn" disabled title="Not available in the demo">Save</button><a href="/oauth2/sign_out">Sign out</a></header>
-<nav aria-label="Demo sections">
-<button type="button" aria-pressed="true" aria-controls="activity">Activity</button><button type="button" aria-pressed="false" aria-controls="categories">Categories</button><button type="button" aria-pressed="false" aria-controls="rules">Rules</button><button type="button" aria-pressed="false" aria-controls="settings">Settings</button><button type="button" aria-pressed="false" aria-controls="try">Try it</button>
-</nav>
-<main>
-<div class="card notice"><strong>Demo only.</strong> No Gmail connection, no Azure model calls, and no saved messages. Activity and settings below are examples; Start and Save are unavailable. Do not enter real or sensitive email.</div>
-<section id="activity" aria-label="Activity">
-<div class="card"><span class="chip">Model calls: 0</span><span class="chip">Classifier: mock</span><span class="chip">Receipts: 2</span><span class="chip">Newsletters: 2</span><span class="chip">Security: 1</span><span class="chip">Promotions: 1</span><p class="hint">Showing 6 example decisions. No inbox is connected.</p></div>
-<div class="card table-wrap"><table><thead><tr><th>Time</th><th>From</th><th>Subject</th><th>Category</th><th>Conf.</th><th>How</th><th>Result</th></tr></thead><tbody>
-<tr><td>Example</td><td>orders@example.com</td><td>Your order shipped</td><td>Receipts</td><td>95%</td><td>mock</td><td>preview</td></tr>
-<tr><td>Example</td><td>digest@example.com</td><td>Your weekly reading list</td><td>Newsletters</td><td>90%</td><td>mock</td><td>preview</td></tr>
-<tr><td>Example</td><td>security@example.com</td><td>New sign-in alert</td><td>Security</td><td>98%</td><td>mock</td><td>preview</td></tr>
-<tr><td>Example</td><td>shop@example.com</td><td>Spring offers are here</td><td>Promotions</td><td>92%</td><td>mock</td><td>preview</td></tr>
-<tr><td>Example</td><td>updates@example.com</td><td>This month's highlights</td><td>Newsletters</td><td>91%</td><td>mock</td><td>preview</td></tr>
-<tr><td>Example</td><td>billing@example.com</td><td>Payment confirmation</td><td>Receipts</td><td>96%</td><td>mock</td><td>preview</td></tr>
-</tbody></table></div></section>
-<section id="categories" aria-label="Categories" hidden><div class="card"><h2>Example categories</h2><p class="hint">A preview of how messages can be organized. These examples are read-only.</p><div class="table-wrap"><table><thead><tr><th>Category</th><th>Description</th><th>Example actions</th></tr></thead><tbody>
-<tr><td>Receipts</td><td>Purchase confirmations and shipping updates</td><td>Label, mark read, archive</td></tr><tr><td>Newsletters</td><td>Subscribed digests and updates</td><td>Label, archive</td></tr><tr><td>Security</td><td>Login alerts and verification codes</td><td>Label</td></tr><tr><td>Promotions</td><td>Sales and marketing</td><td>Label, mark read, archive</td></tr><tr><td>Needs Review</td><td>Messages that do not clearly fit</td><td>Label</td></tr>
-</tbody></table></div></div></section>
-<section id="rules" aria-label="Rules" hidden><div class="card"><h2>Example rule</h2><p class="hint">Rules can classify matching messages before the classifier. This preview is read-only.</p><div class="table-wrap"><table><thead><tr><th>Match</th><th>Category</th></tr></thead><tbody><tr><td>Sender domain: github.com</td><td>Dev</td></tr></tbody></table></div></div></section>
-<section id="settings" aria-label="Settings" hidden><div class="card"><h2>Example settings</h2><p class="hint">Settings shown here illustrate the product and cannot be changed in the demo.</p><p><span class="chip">Dry run: on</span><span class="chip">Label prefix: AI/</span><span class="chip">Confidence threshold: 70%</span><span class="chip">Fallback: Needs Review</span></p></div></section>
-<section id="try" aria-label="Try it" hidden><div class="card"><h2>Try a synthetic message</h2><p class="hint">Try the mock classifier with made-up content. Results are not saved.</p>
-<form id="form"><label for="from">From</label><input id="from" value="orders@example.com" maxlength="500" required><label for="subject">Subject</label><input id="subject" value="Your order shipped" maxlength="1000" required><label for="body">Body</label><textarea id="body" rows="5" maxlength="20000" required>Your synthetic order has shipped.</textarea><button class="btn" type="submit">Classify</button></form><p id="result" role="status"></p></div></section>
-</main><script>
-document.querySelectorAll('nav button').forEach(function(button){button.addEventListener('click',function(){
-  document.querySelectorAll('nav button').forEach(function(tab){var selected=tab===button;tab.setAttribute('aria-pressed',String(selected));document.getElementById(tab.getAttribute('aria-controls')).hidden=!selected});
-})});
-document.getElementById('form').addEventListener('submit',async function(e){
-  e.preventDefault();var out=document.getElementById('result');out.textContent='Classifying...';
-  try{var r=await fetch('/api/try',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from:document.getElementById('from').value,subject:document.getElementById('subject').value,body:document.getElementById('body').value})});
-  var x=await r.json();out.textContent=r.ok?'Category: '+x.category+'\\nConfidence: '+Math.round(x.confidence*100)+'%\\n'+x.reason:'Unable to classify this example.';
-  }catch(e){out.textContent='Unable to classify this example.'}
-});
-</script></body></html>`;
+import { BETA_PAGE } from '../beta/page.js';
+import type { Config } from '../config.js';
+
+/** Use the actual beta dashboard with a strictly synthetic, browser-only backend. */
+export function demoPage(config: Config): string {
+  // Escape script delimiters even if the demo configuration is ever changed.
+  const sampleConfig = JSON.stringify(config).replaceAll('<', '\\u003c');
+  const adapter = String.raw`
+// No beta endpoint is called: all dashboard data and edits stay in this page.
+var demoConfig=__DEMO_CONFIG__;
+var demoSession={email:'preview@example.com',request:{active:true,status:'approved',expiresAt:Date.UTC(2030,0,1)},gmailReady:true,gmailConnected:true,gmailAvailable:true,configAvailable:true,processingOnline:true,processingRequested:false,usage:{attempts:6,limit:100,processed:6,failed:0}};
+var demoDecisions=[
+ {created_at:'2026-11-05T09:00:00Z',sender:'orders@example.com',subject:'Your order shipped',category:'receipts',confidence:.95,source:'mock',applied:false},
+ {created_at:'2026-11-05T08:55:00Z',sender:'digest@example.com',subject:'Your weekly reading list',category:'newsletters',confidence:.90,source:'mock',applied:false},
+ {created_at:'2026-11-05T08:50:00Z',sender:'security@example.com',subject:'New sign-in alert',category:'security',confidence:.98,source:'mock',applied:false},
+ {created_at:'2026-11-05T08:45:00Z',sender:'shop@example.com',subject:'Spring offers are here',category:'promotions',confidence:.92,source:'mock',applied:false},
+ {created_at:'2026-11-05T08:40:00Z',sender:'updates@example.com',subject:'This month\x27s highlights',category:'newsletters',confidence:.91,source:'mock',applied:false},
+ {created_at:'2026-11-05T08:35:00Z',sender:'billing@example.com',subject:'Payment confirmation',category:'receipts',confidence:.96,source:'mock',applied:false}
+];
+var demoEvents=[{occurred_at:'2026-11-05T09:00:00Z',event:'cycle_completed',seen:6,processed:6,failed:0},{occurred_at:'2026-11-05T08:35:00Z',event:'cycle_started'}];
+api=async function(path,method,body){
+ if(path==='/api/session'&&(!method||method==='GET'))return JSON.parse(JSON.stringify(demoSession));
+ if(path==='/api/config'&&(!method||method==='GET'))return JSON.parse(JSON.stringify(demoConfig));
+ if(path==='/api/config'&&method==='PUT'){demoConfig=JSON.parse(JSON.stringify(body));return JSON.parse(JSON.stringify(demoConfig))}
+ if(path==='/api/activity'&&(!method||method==='GET')){recentDecisions=demoDecisions;return demoDecisions}
+ if(path==='/api/processing/events'&&(!method||method==='GET'))return demoEvents;
+ throw new Error('Unavailable in the synthetic demo');
+};
+var demoHeader=header;header=function(){demoHeader();$('#runbtn').disabled=true;$('#runbtn').title='Not available in the demo';$('#mode').textContent=savedDryRun?'DEMO DRY RUN':'DEMO LIVE PREVIEW';$('#run').textContent='Example · Stopped'};
+access=function(){fill($('#main'),h('div',{class:'card'},h('h2',null,'Account'),h('p',null,'Example account: preview@example.com'),h('p',null,'Example approval until '+new Date(demoSession.request.expiresAt).toLocaleString()),h('p',null,'Daily Gmail read-attempt limit: 100 · Used today: 6 · Remaining: 94'),h('p',{class:'hint'},'Example values only. No account is signed in and no Gmail connection exists.'),h('button',{class:'btn',disabled:true},'Request access')),h('div',{class:'card'},h('h2',null,'Gmail connection'),h('p',null,'No Gmail connection in the demo.'),h('button',{class:'btn',disabled:true},'Connect Gmail')))};
+var demoAccount=access;access=function(){demoAccount();$('#main').append(h('div',{class:'card'},h('h2',null,'Your data'),h('p',null,'Example only: the beta offers separate deletion controls and automatic cleanup of temporary email display data.'),['Delete email content data','Delete decision cache data','Delete other account data','Delete all data','Delete account'].map(function(label){return h('div',null,h('h2',null,label),h('button',{class:'ghost danger',disabled:true},label))}))) };
+var demoTabs=tabs;tabs=function(){demoTabs();$('#tabs').append(h('button',{class:tab==='try'?'on':'',onclick:function(){tab='try';render()}},'Try it'))};
+var demoRender=render;render=function(){if(tab!=='try'){demoRender();return}tabs();header();overview();fill($('#main'),h('div',{class:'card'},h('h2',null,'Try a synthetic message'),h('p',{class:'hint'},'Mock classifier only. Do not enter real or sensitive email; results are not saved.'),h('form',{onsubmit:async function(e){e.preventDefault();var out=$('#demo-result');out.textContent='Classifying...';try{var r=await fetch('/api/try',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from:$('#demo-from').value,subject:$('#demo-subject').value,body:$('#demo-body').value})});var x=await r.json();out.textContent=r.ok?'Category: '+x.category+' · Confidence: '+Math.round(x.confidence*100)+'% · '+x.reason:'Unable to classify this example.'}catch(e){out.textContent='Unable to classify this example.'}}},field('From',h('input',{id:'demo-from',value:'orders@example.com',maxlength:'500',required:true})),field('Subject',h('input',{id:'demo-subject',value:'Your order shipped',maxlength:'1000',required:true})),field('Body',h('textarea',{id:'demo-body',value:'Your synthetic order has shipped.',maxlength:'20000',required:true})),h('p',null,h('button',{class:'btn',type:'submit'},'Classify'))),h('p',{id:'demo-result',role:'status'})))};
+$('#logout').disabled=true;$('#logout').title='Not available in the demo';
+`;
+  const marker = "window.addEventListener('beforeunload'";
+  if (!BETA_PAGE.includes(marker)) throw new Error('Beta dashboard initialization changed');
+  return BETA_PAGE.replace('__BETA_BASE_PATH__', '"/demo"')
+    .replace('<title>Postmaster beta</title>', '<title>Postmaster demo</title>')
+    .replace('>BETA</span>', '>DEMO</span>')
+    .replace('Connection stored and ready locally', 'Example connection (not actually connected)')
+    .replace(
+      'After changing settings, press Save. Changes apply on the next scan; no restart is required. To start a new scan sooner, Stop then Start (in-flight requests may finish).',
+      'Explore the dashboard with example data. Save keeps edits in this page only; no scans run.',
+    )
+    .replace('Saved. Changes take effect next cycle.', 'Saved in this demo page only.')
+    .replace(
+      '<section id="setup"',
+      '<div class="setup" role="note"><strong>Synthetic demo only.</strong> No Gmail connection or Azure model calls. All activity, account details and usage are examples. Changes stay in this page and disappear on reload; Start and account actions are unavailable. Do not enter real or sensitive email.</div><section id="setup"',
+    )
+    .replace(marker, () => adapter.replace('__DEMO_CONFIG__', () => sampleConfig) + marker);
+}

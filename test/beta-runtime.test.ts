@@ -4,9 +4,13 @@ import { createServer, request } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { MockClassifier } from '../src/classifier.js';
 import { BetaAccessStore } from '../src/beta/access.js';
+import { privateStateIdentifiers } from '../src/beta/data-privacy.js';
+import { State } from '../src/state.js';
 import {
   createAzureBetaRuntime,
   createBetaRuntime,
@@ -17,6 +21,9 @@ import { BetaSessionStore } from '../src/beta/session-store.js';
 import { PENDING_DENIED_TOKEN_RETENTION_MS } from '../src/beta/token-retention.js';
 
 const now = Date.parse('2026-11-04T10:00:00Z');
+const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
+  DatabaseSync: typeof DatabaseSyncType;
+};
 
 function options(databasePath: string, vaultKey: Uint8Array): BetaRuntimeOptions {
   return {
@@ -194,6 +201,34 @@ describe('local beta runtime lifecycle', () => {
       await runtime.close();
       vault.close();
       access.close();
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it('cleans expired email display data on the scheduler maintenance tick', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'postmaster-runtime-content-retention-'));
+    const path = join(dir, 'beta.db');
+    const key = randomBytes(32);
+    const runtime = createBetaRuntime(options(path, key));
+    const state = new State(path, 'alice', undefined, privateStateIdentifiers(key, 'alice'));
+    const db = new DatabaseSync(path);
+    try {
+      state.recordDecision(
+        'id',
+        { category: 'receipts', confidence: 1, source: 'rule', reason: 'private' },
+        false,
+        new Date(now - 86_400_000),
+        { subject: 'private' },
+      );
+      expect(db.prepare('SELECT count(*) AS n FROM beta_email_content').get()!.n).toBe(1);
+      await runtime.start();
+      await runtime.scheduler.tick();
+      expect(db.prepare('SELECT count(*) AS n FROM beta_email_content').get()!.n).toBe(0);
+      expect(state.hasDecision('id')).toBe(true);
+    } finally {
+      db.close();
+      state.close();
+      await runtime.close();
       rmSync(dir, { recursive: true });
     }
   });

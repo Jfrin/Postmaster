@@ -1,0 +1,5 @@
+# Merge with the existing demo Compose configuration when recreating Caddy.
+services:
+  caddy:
+    networks:
+      backend: {}

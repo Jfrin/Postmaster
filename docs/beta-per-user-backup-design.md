@@ -1,0 +1,17 @@
+# Per-user beta backups: proposed design
+
+**Not implemented or deployed.** The existing `scripts/beta_backup.py` backs up the entire SQLite database into one encrypted archive. Per-user deletion cannot erase a user from those archives, and deleting them would also destroy other users' recovery data. Do not delete or replace existing recovery copies without an explicit retention and recovery decision.
+
+## Requirements before claiming deletion
+
+- Inventory every copy, including old VM and off-VM archives, uploaded blobs, replicas, soft-deleted versions, logs, journals and temporary snapshots. A new format does not erase old copies or independently held copies. Record a verified disposition for each legacy archive without disclosing user data.
+- Export each user's records separately from a consistent SQLite snapshot. Define and test ownership of every table and every column, including application emails before identity binding, notification outbox records, audit actors and targets, consent states, session records, quota counters and safety fences. Fail closed on unknown schema changes rather than silently putting user data into a shared backup. Never include active sessions, leases or OAuth state in a restore without a reviewed reason.
+- Store global configuration and credentials separately, after proving they contain no user-specific records. A shared database snapshot, plaintext temporary export, SQLite WAL or retained container layer defeats per-user isolation.
+- Use independent per-user encryption keys and a catalog of all copies. Ensure that neither shared recovery keys nor key backups can independently decrypt deleted users' archives. Key deletion must include versions, replicas, soft-delete and recovery copies, or deletion must remove all ciphertext copies and verify their removal. Clarify provider retention and immutable-storage limits before promising irreversible erasure.
+- Coordinate exports and deletion with a durable per-user deletion generation/tombstone. A snapshot created before deletion must not be uploaded or restored afterward; backup creation, deletion, upload, retry and recovery need transactional fencing and crash-safe reconciliation. Report deletion as pending or failed until all managed copies are confirmed removed; never report success based only on a queued request.
+- Restore to an isolated environment and merge only authorized, non-deleted user records. Preserve deletion tombstones independently of old snapshots so restoring cannot silently resurrect deleted accounts or data. Start all processing stopped; reconcile Gmail operations, approval changes, revoked credentials and quota limits.
+- Restrict identity and storage permissions, encrypt transport and temporary files, implement monitoring and recovery of partially completed deletion, and test multiple users, concurrent creation/deletion, restarts, offline storage, tampered archives and failed removal. Verify off-VM recovery and pinned Key Vault recovery separately.
+
+## Existing limitations
+
+The current self-service controls delete from the live database, not historical backups, SQLite journals, third-party systems or sent messages. Account deletion can request revocation only when the locally stored Gmail token is available. Google sign-in consent, test-user membership and other project grants are separate. Until the backup design and legacy-copy disposition are implemented and verified, disclose these limitations and handle requests through the operator where necessary.
