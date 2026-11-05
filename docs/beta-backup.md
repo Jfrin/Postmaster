@@ -2,6 +2,8 @@
 
 The beta backup tool is separate from the single-account backup. It creates an SQLite online snapshot (including committed WAL transactions) and encrypts it with `age`. The archive includes the database, beta Compose file, OAuth clients, admin subject and model configuration. It does **not** include the Key Vault secret itself, the Caddy configuration, an application image, or a copy off the VM. Backups contain sensitive credentials and mail metadata even when encrypted.
 
+The live deployment also uses additional Compose overrides and a notification credential that this tool does **not** capture. Preserve and encrypt those separately, together with the active proxy and demo configuration; verify their manifest and off-VM copy. See `docs/plan.md` for the current recovery archives and demo overrides. Never overwrite independently modified configuration. Existing shared archives cannot selectively erase a user's data.
+
 ## Before using real mail
 
 - On a separate trusted recovery machine, install `age`, generate a recovery identity with `age-keygen -o beta-recovery-key.txt`, and securely keep that private file **off the VM**, with a separate backup. Get its public recipient with `age-keygen -y beta-recovery-key.txt`. Do not paste the private key into chat, Git, or the VM. Losing it makes the archive unrecoverable.

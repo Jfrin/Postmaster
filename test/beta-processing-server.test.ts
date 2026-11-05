@@ -140,10 +140,13 @@ describe('beta processing controls and activity prototype', () => {
       ).toBe(200);
       expect(access.processingRequested('alice')).toBe(true);
       expect(access.processingRequested('bob')).toBe(false);
+      online = false;
       expect(
         (await send(base, '/api/processing/stop', alice, 'POST', {}, aliceSession.csrfToken))
           .status,
       ).toBe(200);
+      expect(access.processingRequested('alice')).toBe(false);
+      online = true;
       const live = config.get('alice', now);
       live.settings.dry_run = false;
       expect(
