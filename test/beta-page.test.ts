@@ -34,9 +34,19 @@ class Element {
 describe('beta dashboard', () => {
   it('renders real scoped events and decisions without admin navigation', async () => {
     const elements = Object.fromEntries(
-      ['mode', 'run', 'runbtn', 'dirty', 'save', 'logout', 'setup', 'tabs', 'main', 'toast'].map(
-        (id) => [id, new Element('div')],
-      ),
+      [
+        'mode',
+        'run',
+        'runbtn',
+        'dirty',
+        'save',
+        'logout',
+        'setup',
+        'tabs',
+        'main',
+        'toast',
+        'overview',
+      ].map((id) => [id, new Element('div')]),
     );
     const session = {
       email: 'alice@example.com',
@@ -49,6 +59,7 @@ describe('beta dashboard', () => {
       configAvailable: true,
       processingOnline: true,
       processingRequested: false,
+      usage: { attempts: 2, limit: 100, processed: 1, failed: 0 },
     };
     const config = { settings: { dry_run: true }, categories: [], rules: [] };
     const replies: Record<string, unknown> = {
@@ -99,6 +110,8 @@ describe('beta dashboard', () => {
     );
     expect(BETA_PAGE).toContain('Changes apply on the next scan; no restart is required');
     expect(elements.main!.text()).toContain('<img>');
+    expect(elements.overview!.text()).toContain('Gmail read attempts: 2 / 100');
+    expect(elements.overview!.text()).toContain('latest 1 decisions');
     expect(elements.tabs!.text()).not.toContain('Admin');
     expect(elements.tabs!.text()).toContain('Account');
     expect(elements.setup!.hidden).toBe(true);
@@ -113,10 +126,14 @@ describe('beta dashboard', () => {
     expect(goToAccount).toBeDefined();
     goToAccount!.listeners.click!();
     expect(elements.main!.text()).toContain('Gmail is not connected');
+    expect(elements.main!.text()).not.toContain('Google account for saved Gmail connection');
     expect(elements.main!.text()).toContain('Connect Gmail');
     session.gmailConnected = true;
     await vm.runInContext('refresh()', context);
     expect(elements.setup!.text()).toContain('saved Gmail connection is not ready');
+    expect(elements.main!.text()).toContain('Google account for saved Gmail connection');
+    expect(elements.main!.text()).toContain('alice@example.com');
+    expect(elements.main!.text()).toContain('saved grant may need reconnecting');
     session.gmailReady = true;
     await vm.runInContext('refresh()', context);
     expect(elements.setup!.hidden).toBe(true);
@@ -128,7 +145,19 @@ describe('beta dashboard', () => {
     account!.listeners.click!();
     await new Promise((resolve) => setImmediate(resolve));
     expect(elements.main!.text()).toContain('Gmail connection');
+    expect(elements.main!.text()).toContain('Daily Gmail read-attempt limit: 100');
+    expect(elements.main!.text()).toContain('Used today: 2');
+    expect(elements.main!.text()).toContain('Remaining: 98');
+    expect(elements.main!.text()).toContain('Approval and Start are still required');
+    session.usage.attempts = 3;
+    await vm.runInContext('refresh()', context);
+    expect(elements.main!.text()).toContain('Used today: 3');
+    expect(elements.main!.text()).toContain('Remaining: 97');
     expect(elements.mode!.textContent).toContain('DRY RUN');
+    vm.runInContext("cfg.rules=[{match:{from:''},category:'work'}];dirty=true", context);
+    await elements.save!.onclick!();
+    expect(elements.toast!.textContent).toContain('Each rule needs a sender, domain, or subject');
+    expect(vm.runInContext('cfg.rules.length', context)).toBe(1);
   });
 
   it('renders requests safely on the separate admin page and sends CSRF-protected decisions', async () => {
@@ -141,6 +170,7 @@ describe('beta dashboard', () => {
         'requests',
         'applications',
         'application-error',
+        'notification-status',
       ].map((id) => [id, new Element('div')]),
     );
     const calls: {
@@ -158,6 +188,7 @@ describe('beta dashboard', () => {
         processedToday: 0,
         failedToday: 0,
       },
+      '/beta/api/admin/notifications': { enabled: true, pending: 1, failed: 0, failures: [] },
       '/beta/api/admin/requests': [
         {
           subject: 'alice',

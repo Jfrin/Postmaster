@@ -1,4 +1,5 @@
 import { mkdirSync } from 'node:fs';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { dirname } from 'node:path';
 import { createRequire } from 'node:module';
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
@@ -46,6 +47,7 @@ export interface BetaApplication {
   expiresAt: number | null;
   dailyLimit: number;
   subject: string | null;
+  emailVerifiedAt: number | null;
 }
 
 interface AccountRow {
@@ -91,8 +93,16 @@ function checkLeaseInput(subject: string, owner: string, now: number, ttlMs?: nu
  */
 export class BetaAccessStore {
   private readonly db: DatabaseSyncType;
+  private readonly verificationKey: Buffer | null;
 
-  constructor(path: string) {
+  constructor(path: string, verificationKey?: Uint8Array) {
+    if (verificationKey && verificationKey.byteLength !== 32)
+      throw new Error('invalid verification key');
+    this.verificationKey = verificationKey
+      ? createHmac('sha256', verificationKey)
+          .update('postmaster-application-verification-v1')
+          .digest()
+      : null;
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA busy_timeout = 5000');
@@ -108,6 +118,20 @@ export class BetaAccessStore {
       );
       CREATE TABLE IF NOT EXISTS beta_application_rate (
         id INTEGER PRIMARY KEY CHECK (id = 1), window_start INTEGER NOT NULL, attempts INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS beta_notification_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL, kind TEXT NOT NULL
+          CHECK (kind IN ('application', 'approved', 'denied')),
+        expires_at INTEGER, created_at INTEGER NOT NULL, next_attempt INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0, lease_until INTEGER, lease_token TEXT,
+        failed INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS beta_application_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        nonce TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
+        next_attempt INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        guesses INTEGER NOT NULL DEFAULT 0, lease_until INTEGER, lease_token TEXT,
+        failed INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS beta_access_requests (
         subject TEXT PRIMARY KEY, email TEXT NOT NULL,
@@ -154,6 +178,11 @@ export class BetaAccessStore {
           'ALTER TABLE beta_processing_controls ADD COLUMN generation INTEGER NOT NULL DEFAULT 0',
         );
       }
+      const applicationColumns = this.db.prepare('PRAGMA table_info(beta_applications)').all() as {
+        name: string;
+      }[];
+      if (!applicationColumns.some((column) => column.name === 'email_verified_at'))
+        this.db.exec('ALTER TABLE beta_applications ADD COLUMN email_verified_at INTEGER');
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
@@ -164,6 +193,7 @@ export class BetaAccessStore {
 
   close(): void {
     this.db.close();
+    this.verificationKey?.fill(0);
   }
 
   private transaction<T>(fn: () => T): T {
@@ -201,36 +231,146 @@ export class BetaAccessStore {
     });
   }
 
-  /** Public email applications are unverified; never treat them as a Google identity. */
-  submitApplication(email: string, now: number): boolean {
-    checkTime(now);
-    return this.transaction(() => {
-      const rate = this.db
-        .prepare('SELECT window_start, attempts FROM beta_application_rate WHERE id = 1')
-        .get() as { window_start: number; attempts: number } | undefined;
-      if (!rate || now >= rate.window_start + 3_600_000) {
-        this.db
-          .prepare(
-            `INSERT INTO beta_application_rate (id, window_start, attempts) VALUES (1, ?, 1)
-          ON CONFLICT(id) DO UPDATE SET window_start = excluded.window_start, attempts = 1`,
-          )
-          .run(now);
-      } else {
-        if (now < rate.window_start || rate.attempts >= 100) return false;
-        this.db
-          .prepare('UPDATE beta_application_rate SET attempts = attempts + 1 WHERE id = 1')
-          .run();
-      }
-      const count = this.db.prepare('SELECT count(*) AS n FROM beta_applications').get() as {
-        n: number;
-      };
-      if (count.n >= 5000) return false;
+  private consumeApplicationRate(now: number): boolean {
+    const rate = this.db
+      .prepare('SELECT window_start, attempts FROM beta_application_rate WHERE id = 1')
+      .get() as { window_start: number; attempts: number } | undefined;
+    if (!rate || now >= rate.window_start + 3_600_000) {
       this.db
         .prepare(
-          `INSERT INTO beta_applications (email, status, requested_at, daily_limit)
-        VALUES (?, 'pending', ?, ?) ON CONFLICT(email) DO NOTHING`,
+          `INSERT INTO beta_application_rate (id, window_start, attempts) VALUES (1, ?, 1)
+          ON CONFLICT(id) DO UPDATE SET window_start = excluded.window_start, attempts = 1`,
         )
-        .run(email.toLowerCase(), now, DEFAULT_DAILY_READ_LIMIT);
+        .run(now);
+    } else {
+      if (now < rate.window_start || rate.attempts >= 100) return false;
+      this.db
+        .prepare('UPDATE beta_application_rate SET attempts = attempts + 1 WHERE id = 1')
+        .run();
+    }
+    return true;
+  }
+
+  private insertApplication(
+    email: string,
+    now: number,
+    notify: boolean,
+    inboxVerified = false,
+  ): boolean {
+    if (
+      this.db.prepare('SELECT 1 FROM beta_applications WHERE email = ? COLLATE NOCASE').get(email)
+    )
+      return true;
+    const count = this.db.prepare('SELECT count(*) AS n FROM beta_applications').get() as {
+      n: number;
+    };
+    if (count.n >= 5000) return false;
+    const inserted = this.db
+      .prepare(
+        `INSERT INTO beta_applications (email, status, requested_at, daily_limit, email_verified_at)
+        VALUES (?, 'pending', ?, ?, ?) ON CONFLICT(email) DO NOTHING`,
+      )
+      .run(email.toLowerCase(), now, DEFAULT_DAILY_READ_LIMIT, inboxVerified ? now : null);
+    if (notify && inserted.changes === 1) {
+      this.db
+        .prepare(
+          "INSERT INTO beta_notification_outbox (email, kind, created_at, next_attempt) VALUES (?, 'application', ?, ?)",
+        )
+        .run(email.toLowerCase(), now, now);
+    }
+    return true;
+  }
+
+  /** Internal legacy entry point; public intake requires verification. */
+  submitApplication(email: string, now: number, notify = false): boolean {
+    checkTime(now);
+    return this.transaction(() => {
+      if (!this.consumeApplicationRate(now)) return false;
+      return this.insertApplication(email, now, notify);
+    });
+  }
+
+  private verificationCode(email: string, nonce: string, expiresAt: number): string {
+    if (!this.verificationKey) throw new Error('email verification unavailable');
+    const digest = createHmac('sha256', this.verificationKey)
+      .update(JSON.stringify([email, nonce, expiresAt]))
+      .digest();
+    return String(digest.readUInt32BE(0) % 100_000_000).padStart(8, '0');
+  }
+
+  canVerifyApplications(): boolean {
+    return this.verificationKey !== null;
+  }
+
+  /** Request messages are generic, including for addresses already in the application table. */
+  requestApplicationVerification(email: string, now: number): boolean {
+    checkTime(now);
+    if (!this.verificationKey) throw new Error('email verification unavailable');
+    email = email.toLowerCase();
+    return this.transaction(() => {
+      if (!this.consumeApplicationRate(now)) return false;
+      this.db.prepare('DELETE FROM beta_application_verifications WHERE expires_at <= ?').run(now);
+      if (
+        this.db
+          .prepare(
+            'SELECT 1 FROM beta_applications WHERE email = ? COLLATE NOCASE AND email_verified_at IS NOT NULL',
+          )
+          .get(email)
+      )
+        return true;
+      const previous = this.db
+        .prepare(
+          'SELECT created_at FROM beta_application_verifications WHERE email = ? COLLATE NOCASE',
+        )
+        .get(email) as { created_at: number } | undefined;
+      if (previous && now < previous.created_at + 600_000) return true;
+      const count = this.db
+        .prepare('SELECT count(*) AS n FROM beta_application_verifications')
+        .get() as { n: number };
+      if (!previous && count.n >= 5000) return false;
+      this.db
+        .prepare(
+          `INSERT INTO beta_application_verifications (email, nonce, expires_at, created_at, next_attempt)
+        VALUES (?, ?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET nonce = excluded.nonce,
+        expires_at = excluded.expires_at, created_at = excluded.created_at, next_attempt = excluded.next_attempt,
+        attempts = 0, guesses = 0, lease_until = NULL, lease_token = NULL, failed = 0, sent = 0`,
+        )
+        .run(email, randomBytes(32).toString('base64url'), now + 1_800_000, now, now);
+      return true;
+    });
+  }
+
+  /** One-time inbox proof; it is not a Google identity or mailbox authorization. */
+  verifyApplication(email: string, code: string, now: number): boolean {
+    checkTime(now);
+    if (!this.verificationKey) throw new Error('email verification unavailable');
+    if (!/^\d{8}$/.test(code)) return false;
+    email = email.toLowerCase();
+    return this.transaction(() => {
+      const row = this.db
+        .prepare(
+          'SELECT nonce, expires_at, guesses FROM beta_application_verifications WHERE email = ? COLLATE NOCASE',
+        )
+        .get(email) as { nonce: string; expires_at: number; guesses: number } | undefined;
+      if (!row || row.expires_at <= now || row.guesses >= 5) return false;
+      const expected = Buffer.from(this.verificationCode(email, row.nonce, row.expires_at));
+      if (!timingSafeEqual(expected, Buffer.from(code))) {
+        this.db
+          .prepare(
+            'UPDATE beta_application_verifications SET guesses = guesses + 1 WHERE email = ? COLLATE NOCASE',
+          )
+          .run(email);
+        return false;
+      }
+      if (!this.insertApplication(email, now, true, true)) return false;
+      this.db
+        .prepare(
+          'UPDATE beta_applications SET email_verified_at = ? WHERE email = ? COLLATE NOCASE AND email_verified_at IS NULL',
+        )
+        .run(now, email);
+      this.db
+        .prepare('DELETE FROM beta_application_verifications WHERE email = ? COLLATE NOCASE')
+        .run(email);
       return true;
     });
   }
@@ -246,6 +386,7 @@ export class BetaAccessStore {
       expires_at: number | null;
       daily_limit: number;
       subject: string | null;
+      email_verified_at: number | null;
     }[];
     return rows.map((row) => ({
       email: row.email,
@@ -254,6 +395,7 @@ export class BetaAccessStore {
       expiresAt: row.expires_at,
       dailyLimit: row.daily_limit,
       subject: row.subject,
+      emailVerifiedAt: row.email_verified_at,
     }));
   }
 
@@ -264,6 +406,7 @@ export class BetaAccessStore {
     expiresAt: number | null,
     dailyLimit: number,
     now: number,
+    notify = false,
   ): void {
     checkTime(now);
     if (status === 'approved') {
@@ -276,14 +419,33 @@ export class BetaAccessStore {
     this.transaction(() => {
       this.requireAdmin(actor);
       const app = this.db
-        .prepare('SELECT subject FROM beta_applications WHERE email = ? COLLATE NOCASE')
-        .get(email) as { subject: string | null } | undefined;
+        .prepare('SELECT subject, status FROM beta_applications WHERE email = ? COLLATE NOCASE')
+        .get(email) as { subject: string | null; status: BetaApplication['status'] } | undefined;
       if (!app) throw new Error('application not found');
       this.db
         .prepare(
           'UPDATE beta_applications SET status = ?, expires_at = ?, daily_limit = ? WHERE email = ? COLLATE NOCASE',
         )
         .run(status, status === 'approved' ? expiresAt : null, dailyLimit, email);
+      if (notify && app.status !== status) {
+        // A later decision supersedes older unsent decisions. An in-flight send cannot be recalled.
+        this.db
+          .prepare(
+            "DELETE FROM beta_notification_outbox WHERE email = ? COLLATE NOCASE AND kind != 'application' AND (lease_until IS NULL OR lease_until <= ?)",
+          )
+          .run(email, now);
+        this.db
+          .prepare(
+            'INSERT INTO beta_notification_outbox (email, kind, expires_at, created_at, next_attempt) VALUES (?, ?, ?, ?, ?)',
+          )
+          .run(email.toLowerCase(), status, status === 'approved' ? expiresAt : null, now, now);
+      } else if (notify && status === 'approved') {
+        this.db
+          .prepare(
+            "UPDATE beta_notification_outbox SET expires_at = ? WHERE email = ? COLLATE NOCASE AND kind = 'approved' AND (lease_until IS NULL OR lease_until <= ?)",
+          )
+          .run(expiresAt, email, now);
+      }
       if (app.subject) {
         const prior = this.account(app.subject);
         if (prior) {
@@ -306,6 +468,170 @@ export class BetaAccessStore {
         }
       }
     });
+  }
+
+  /** Claims one notification atomically; the lease bounds recovery after a crash. */
+  claimNotification(
+    now: number,
+    token: string,
+  ): {
+    id: number;
+    email: string;
+    kind: 'application' | 'approved' | 'denied' | 'verification';
+    expiresAt: number | null;
+    attempts: number;
+    verificationCode?: string;
+  } | null {
+    checkTime(now);
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(token)) throw new Error('invalid notification lease');
+    return this.transaction(() => {
+      this.db.prepare('DELETE FROM beta_application_verifications WHERE expires_at <= ?').run(now);
+      this.db
+        .prepare(
+          `DELETE FROM beta_notification_outbox
+        WHERE kind != 'application' AND (lease_until IS NULL OR lease_until <= ?)
+          AND NOT EXISTS (SELECT 1 FROM beta_applications a WHERE a.email = beta_notification_outbox.email COLLATE NOCASE
+            AND a.status = beta_notification_outbox.kind AND (a.status != 'approved' OR a.expires_at > ?))`,
+        )
+        .run(now, now);
+      const row = this.db
+        .prepare(
+          `SELECT id, email, kind, expires_at, attempts FROM beta_notification_outbox
+        WHERE failed = 0 AND next_attempt <= ? AND (lease_until IS NULL OR lease_until <= ?)
+        ORDER BY id LIMIT 1`,
+        )
+        .get(now, now) as
+        | {
+            id: number;
+            email: string;
+            kind: 'application' | 'approved' | 'denied';
+            expires_at: number | null;
+            attempts: number;
+          }
+        | undefined;
+      if (!row) {
+        const verification = this.db
+          .prepare(
+            `SELECT id, email, nonce, expires_at, attempts FROM beta_application_verifications
+          WHERE sent = 0 AND failed = 0 AND next_attempt <= ? AND (lease_until IS NULL OR lease_until <= ?)
+          ORDER BY id LIMIT 1`,
+          )
+          .get(now, now) as
+          | { id: number; email: string; nonce: string; expires_at: number; attempts: number }
+          | undefined;
+        if (!verification) return null;
+        const verificationCode = this.verificationCode(
+          verification.email,
+          verification.nonce,
+          verification.expires_at,
+        );
+        this.db
+          .prepare(
+            'UPDATE beta_application_verifications SET lease_token = ?, lease_until = ?, attempts = attempts + 1 WHERE id = ?',
+          )
+          .run(token, now + 120_000, verification.id);
+        return {
+          id: -verification.id,
+          email: verification.email,
+          kind: 'verification',
+          expiresAt: verification.expires_at,
+          attempts: verification.attempts + 1,
+          verificationCode,
+        };
+      }
+      this.db
+        .prepare(
+          'UPDATE beta_notification_outbox SET lease_token = ?, lease_until = ?, attempts = attempts + 1 WHERE id = ?',
+        )
+        .run(token, now + 120_000, row.id);
+      return {
+        id: row.id,
+        email: row.email,
+        kind: row.kind,
+        expiresAt: row.expires_at,
+        attempts: row.attempts + 1,
+      };
+    });
+  }
+
+  finishNotification(id: number, token: string, now: number, delivered: boolean): void {
+    checkTime(now);
+    if (id < 0) {
+      if (delivered) {
+        this.db
+          .prepare(
+            'UPDATE beta_application_verifications SET sent = 1, lease_token = NULL, lease_until = NULL WHERE id = ? AND lease_token = ?',
+          )
+          .run(-id, token);
+      } else {
+        this.db
+          .prepare(
+            `UPDATE beta_application_verifications SET lease_token = NULL, lease_until = NULL,
+          failed = CASE WHEN attempts >= 5 THEN 1 ELSE 0 END,
+          next_attempt = ? + MIN(3600000, 60000 * (1 << MIN(attempts - 1, 6)))
+          WHERE id = ? AND lease_token = ?`,
+          )
+          .run(now, -id, token);
+      }
+      return;
+    }
+    if (delivered) {
+      this.db
+        .prepare('DELETE FROM beta_notification_outbox WHERE id = ? AND lease_token = ?')
+        .run(id, token);
+    } else {
+      this.db
+        .prepare(
+          `UPDATE beta_notification_outbox SET lease_token = NULL, lease_until = NULL,
+        failed = CASE WHEN attempts >= 5 THEN 1 ELSE 0 END,
+        next_attempt = ? + MIN(3600000, 60000 * (1 << MIN(attempts - 1, 6)))
+        WHERE id = ? AND lease_token = ?`,
+        )
+        .run(now, id, token);
+    }
+  }
+
+  notificationCounts(actor: string): { pending: number; failed: number } {
+    this.requireAdmin(actor);
+    return this.db
+      .prepare(
+        `SELECT (SELECT count(*) FROM beta_notification_outbox WHERE failed = 0) +
+          (SELECT count(*) FROM beta_application_verifications WHERE failed = 0 AND sent = 0) AS pending,
+          (SELECT count(*) FROM beta_notification_outbox WHERE failed = 1) +
+          (SELECT count(*) FROM beta_application_verifications WHERE failed = 1 AND sent = 0) AS failed`,
+      )
+      .get() as { pending: number; failed: number };
+  }
+
+  failedNotifications(actor: string): { id: number; email: string; kind: string }[] {
+    this.requireAdmin(actor);
+    return this.db
+      .prepare(
+        `SELECT id, email, kind FROM beta_notification_outbox WHERE failed = 1
+         UNION ALL SELECT -id AS id, email, 'verification' AS kind FROM beta_application_verifications WHERE failed = 1 AND sent = 0 LIMIT 100`,
+      )
+      .all() as unknown as { id: number; email: string; kind: string }[];
+  }
+
+  retryNotification(actor: string, id: number, now: number): boolean {
+    this.requireAdmin(actor);
+    checkTime(now);
+    if (!Number.isSafeInteger(id) || id === 0) throw new Error('invalid notification id');
+    if (id < 0)
+      return (
+        this.db
+          .prepare(
+            'UPDATE beta_application_verifications SET failed = 0, attempts = 0, next_attempt = ? WHERE id = ? AND failed = 1 AND sent = 0 AND expires_at > ?',
+          )
+          .run(now, -id, now).changes === 1
+      );
+    return (
+      this.db
+        .prepare(
+          'UPDATE beta_notification_outbox SET failed = 0, attempts = 0, next_attempt = ? WHERE id = ? AND failed = 1',
+        )
+        .run(now, id).changes === 1
+    );
   }
 
   /** Bind an approved email once, only after Google verifies the signed-in account. */
@@ -914,6 +1240,31 @@ export class BetaAccessStore {
       .prepare('SELECT attempts FROM beta_read_attempts WHERE subject = ? AND day = ?')
       .get(subject, day) as { attempts: number } | undefined;
     return { day, attempts: usage?.attempts ?? 0, limit: row.daily_limit };
+  }
+
+  /** Only call with the authenticated account's server-side subject. */
+  ownUsage(
+    subject: string,
+    now: number,
+  ): { day: string; attempts: number; limit: number; processed: number; failed: number } | null {
+    checkSubject(subject);
+    checkTime(now);
+    const account = this.account(subject);
+    if (!account) return null;
+    const day = utcDay(now);
+    const reads = this.db
+      .prepare('SELECT attempts FROM beta_read_attempts WHERE subject = ? AND day = ?')
+      .get(subject, day) as { attempts: number } | undefined;
+    const cycles = this.db
+      .prepare('SELECT processed, failed FROM beta_cycle_metrics WHERE subject = ? AND day = ?')
+      .get(subject, day) as { processed: number; failed: number } | undefined;
+    return {
+      day,
+      attempts: reads?.attempts ?? 0,
+      limit: account.daily_limit,
+      processed: cycles?.processed ?? 0,
+      failed: cycles?.failed ?? 0,
+    };
   }
 
   cycleUsage(

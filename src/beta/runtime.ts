@@ -7,6 +7,7 @@ import { GmailConsentStateStore } from './gmail-consent-state.js';
 import { IdentityAccessDeniedError, IdentityFlow, type IdentityProvider } from './identity-flow.js';
 import { loadAzureVaultKey } from './key-vault.js';
 import { IdentityLoginStateStore } from './oauth-state.js';
+import { NotificationWorker } from './notifications.js';
 import { BetaProcessingEvents } from './processing-events.js';
 import { BetaScheduler } from './scheduler.js';
 import { createBetaServer } from './server.js';
@@ -34,6 +35,9 @@ export interface BetaRuntimeOptions {
   now?: () => number;
   maxConcurrent?: number;
   tickMs?: number;
+  notificationSender?: (
+    notice: NonNullable<ReturnType<BetaAccessStore['claimNotification']>>,
+  ) => Promise<void>;
 }
 
 /** Local wiring for managed-key deployments; the caller still owns all deployment controls. */
@@ -74,7 +78,10 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
   };
 
   try {
-    const access = own(new BetaAccessStore(options.databasePath));
+    const access = own(new BetaAccessStore(options.databasePath, options.vaultKey));
+    const notifications = options.notificationSender
+      ? new NotificationWorker(access, options.notificationSender, now)
+      : null;
     const vault = own(new GmailTokenVault(options.databasePath, options.vaultKey));
     const config = own(new BetaUserConfigStore(options.databasePath, options.defaultConfigYaml));
     const activity = own(new BetaActivityStore(options.databasePath));
@@ -147,6 +154,7 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
       activityStore: activity,
       processingEvents,
       processingOnline: () => scheduler.status().online,
+      notificationsEnabled: !!notifications,
       authenticate: async (req) => {
         const session = sessions.authenticate(req.headers.cookie, now());
         return session &&
@@ -169,6 +177,7 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
       shutdown = (async () => {
         const results = await Promise.allSettled([
           scheduler.stop(),
+          notifications?.stop() ?? Promise.resolve(),
           new Promise<void>((resolve, reject) => {
             if (!server.listening) return resolve();
             server.close((error) => (error ? reject(error) : resolve()));
@@ -197,6 +206,7 @@ export function createBetaRuntime(options: BetaRuntimeOptions) {
         startup = (async () => {
           try {
             scheduler.start();
+            notifications?.start();
             await new Promise<void>((resolve, reject) => {
               const onError = (error: Error) => reject(error);
               server.once('error', onError);

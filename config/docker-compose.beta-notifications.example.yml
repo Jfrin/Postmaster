@@ -1,0 +1,8 @@
+# Optional override. Paths are resolved relative to the first Compose file.
+# Copy the credential privately; never put its contents in this file or an image.
+services:
+  beta:
+    environment:
+      BETA_NOTIFICATION_CREDENTIAL_PATH: /srv/secrets/notification-sender.json
+    volumes:
+      - ./secrets/notification-sender.json:/srv/secrets/notification-sender.json:ro

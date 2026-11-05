@@ -50,6 +50,7 @@ export interface BetaServerOptions {
   processingEvents?: BetaProcessingEvents;
   /** Must reflect the trusted scheduler's actual online status. */
   processingOnline?: () => boolean;
+  notificationsEnabled?: boolean;
   now?: () => number;
 }
 
@@ -67,7 +68,16 @@ const Approval = z
   .strict();
 const Denial = z.object({ subject: Subject }).strict();
 const Request = z.object({}).strict();
-const Application = z.object({ email: z.string().trim().email().max(254) }).strict();
+const ApplicationEmail = z
+  .string()
+  .trim()
+  .email()
+  .max(254)
+  .regex(/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+$/);
+const Application = z.object({ email: ApplicationEmail }).strict();
+const ApplicationVerification = z
+  .object({ email: ApplicationEmail, code: z.string().regex(/^\d{8}$/) })
+  .strict();
 const ApplicationDecision = z
   .object({
     email: z.string().email().max(254),
@@ -148,7 +158,12 @@ async function handle(
     return send(
       res,
       200,
-      BETA_INTAKE_PAGE.replace('__BETA_BASE_PATH__', JSON.stringify(basePath)),
+      BETA_INTAKE_PAGE.replace('__BETA_BASE_PATH__', JSON.stringify(basePath)).replace(
+        '__NOTIFICATION_TEXT__',
+        options.notificationsEnabled
+          ? 'Decision emails are sent after review when delivery is available.'
+          : 'Decisions are not emailed automatically.',
+      ),
       true,
     );
   if (method === 'POST' && path === '/api/apply') {
@@ -157,8 +172,30 @@ async function handle(
       return send(res, 415, { error: 'application/json required' });
     const input = Application.safeParse(await readJson(req, 2048));
     if (!input.success) return send(res, 400, { error: 'invalid application' });
-    if (!options.store.submitApplication(input.data.email, now))
+    if (!options.notificationsEnabled || !options.store.canVerifyApplications())
+      return send(res, 503, { error: 'application verification unavailable' });
+    if (
+      !options.store.requestApplicationVerification(input.data.email, options.now?.() ?? Date.now())
+    )
       return send(res, 429, { error: 'try again later' });
+    return send(res, 200, { ok: true });
+  }
+  if (method === 'POST' && path === '/api/apply/verify') {
+    if (req.headers.origin !== options.origin) return send(res, 403, { error: 'forbidden' });
+    if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? ''))
+      return send(res, 415, { error: 'application/json required' });
+    const input = ApplicationVerification.safeParse(await readJson(req, 2048));
+    if (!input.success) return send(res, 400, { error: 'invalid or expired verification code' });
+    if (!options.notificationsEnabled || !options.store.canVerifyApplications())
+      return send(res, 503, { error: 'application verification unavailable' });
+    if (
+      !options.store.verifyApplication(
+        input.data.email,
+        input.data.code,
+        options.now?.() ?? Date.now(),
+      )
+    )
+      return send(res, 400, { error: 'invalid or expired verification code' });
     return send(res, 200, { ok: true });
   }
   if (method === 'GET' && path === '/auth/google/start' && options.identityFlow) {
@@ -276,7 +313,12 @@ async function handle(
     return send(
       res,
       200,
-      BETA_ADMIN_PAGE.replace('__BETA_BASE_PATH__', JSON.stringify(basePath)),
+      BETA_ADMIN_PAGE.replace('__BETA_BASE_PATH__', JSON.stringify(basePath)).replace(
+        '__NOTIFICATION_TEXT__',
+        options.notificationsEnabled
+          ? 'Decision emails are queued; delivery can fail. Check notification status below.'
+          : 'Decisions are not emailed automatically.',
+      ),
       true,
     );
   }
@@ -293,7 +335,10 @@ async function handle(
       email: session.verifiedEmail,
       csrfToken: session.csrfToken,
       isAdmin,
-      request: request && { ...request, active: store.isActive(session.subject, now) },
+      request: request && {
+        ...request,
+        active: store.isActive(session.subject, now),
+      },
       gmailAvailable: !!options.gmailConsentFlow,
       gmailConnected: options.gmailConsentFlow?.isConnected(session.subject) ?? false,
       gmailReady: options.gmailConsentFlow?.isReady(session.subject) ?? false,
@@ -301,6 +346,7 @@ async function handle(
       activityAvailable: !!options.activityStore,
       processingOnline: options.processingOnline?.() ?? false,
       processingRequested: store.processingRequested(session.subject),
+      usage: store.ownUsage(session.subject, now),
     });
   }
   if (method === 'POST' && path === '/api/access/request') {
@@ -314,7 +360,13 @@ async function handle(
   }
   if (method === 'PUT' && path === '/api/config' && options.userConfigStore) {
     const input = ConfigSchema.safeParse(await readAuthorizedJson(options, req, session));
-    if (!input.success) return send(res, 400, { error: 'invalid configuration' });
+    if (!input.success)
+      return send(res, 400, {
+        error: `Invalid configuration: ${input.error.issues
+          .slice(0, 3)
+          .map((issue) => `${issue.path.join('.') || 'configuration'}: ${issue.message}`)
+          .join('; ')}`,
+      });
     return send(
       res,
       200,
@@ -384,6 +436,30 @@ async function handle(
   }
   if (method === 'GET' && path === '/api/admin/applications')
     return send(res, 200, store.listApplications(session.subject));
+  if (method === 'GET' && path === '/api/admin/notifications')
+    return send(res, 200, {
+      enabled: !!options.notificationsEnabled,
+      ...store.notificationCounts(session.subject),
+      failures: store.failedNotifications(session.subject),
+    });
+  if (method === 'POST' && path === '/api/admin/notifications/retry') {
+    const input = z
+      .object({
+        id: z
+          .number()
+          .int()
+          .safe()
+          .refine((id) => id !== 0),
+      })
+      .strict()
+      .safeParse(await readAuthorizedJson(options, req, session));
+    if (!input.success) return send(res, 400, { error: 'invalid notification' });
+    if (!options.notificationsEnabled)
+      return send(res, 503, { error: 'notifications unavailable' });
+    if (!store.retryNotification(session.subject, input.data.id, options.now?.() ?? Date.now()))
+      return send(res, 404, { error: 'notification not found' });
+    return send(res, 200, { ok: true });
+  }
   if (method === 'POST' && path === '/api/admin/application-decision') {
     const input = ApplicationDecision.safeParse(await readAuthorizedJson(options, req, session));
     if (
@@ -399,6 +475,7 @@ async function handle(
       input.data.expiresAt,
       input.data.dailyLimit,
       now,
+      options.notificationsEnabled,
     );
     return send(res, 200, { ok: true });
   }

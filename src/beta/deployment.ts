@@ -4,6 +4,7 @@ import { AzureClassifier } from '../classifier.js';
 import { BetaAccessStore } from './access.js';
 import { GoogleGmailConsentProvider } from './google-gmail-consent.js';
 import { GoogleIdentityProvider } from './google-identity.js';
+import { gmailNotificationSender } from './notifications.js';
 import { restrictIdentityProvider } from './identity-flow.js';
 import { createAzureBetaRuntime } from './runtime.js';
 import { googleGmailServiceFactory } from './worker.js';
@@ -22,6 +23,7 @@ const Env = z.object({
   BETA_ADMIN_EMAIL: z.string().email().max(320),
   BETA_OWNER_ONLY: z.enum(['true', 'false']).default('false'),
   BETA_APPLICATION_ACCESS: z.enum(['true', 'false']).default('false'),
+  BETA_NOTIFICATION_CREDENTIAL_PATH: z.string().min(1).optional(),
   BETA_PORT: z.coerce.number().int().min(1).max(65535).default(8081),
   BETA_BIND: z.enum(['127.0.0.1', '0.0.0.0']).default('127.0.0.1'),
 });
@@ -83,6 +85,15 @@ export async function createDeploymentRuntime(
           : identityProvider,
       ...(ownerOnly ? { onlySubject: options.BETA_ADMIN_SUBJECT } : {}),
       applicationAccess,
+      ...(options.BETA_NOTIFICATION_CREDENTIAL_PATH
+        ? {
+            notificationSender: gmailNotificationSender(
+              options.BETA_NOTIFICATION_CREDENTIAL_PATH,
+              options.BETA_ADMIN_EMAIL,
+              `${options.BETA_ORIGIN}${options.BETA_BASE_PATH}`,
+            ),
+          }
+        : {}),
       gmailConsentProvider: new GoogleGmailConsentProvider(
         gmail.client_id,
         gmail.client_secret,

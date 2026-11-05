@@ -26,7 +26,7 @@ The hosted service is experimental. Approval, separate Gmail consent, configurat
 
 - **Hybrid classification:** checks deterministic rules and cached sender decisions before calling the model, reducing unnecessary API requests.
 - **Guarded AI output:** treats email as untrusted input, restricts model responses to configured categories with a JSON schema, and routes low-confidence or invalid results to a fallback category.
-- **Safe operation:** supports dry runs, configurable actions, an LLM call cap, and explicit Start/Stop controls. The application has no send or delete action.
+- **Safe operation:** supports dry runs, configurable actions, an LLM call cap, and explicit Start/Stop controls. Mailbox processing has no send or delete action.
 - **Resilient processing:** persists decisions and Gmail history cursors in SQLite, skips already-processed messages, and retries failures without advancing the cursor prematurely.
 - **Quota-aware Gmail access:** limits request usage and backs off when Gmail throttles requests.
 - **Dashboard:** inspect activity, edit categories and rules, adjust settings, and control processing. The local single-user dashboard also previews sample messages.
@@ -120,7 +120,7 @@ This is a smoke test, not a measure of model accuracy. For integration checks, `
 
 ## Architecture and testing
 
-The application separates the Gmail client, classifier, pipeline, and persistent state behind testable interfaces. In the local single-user setup, the dashboard and poller run as separate containers and share local state. The hosted beta uses separate account-scoped access, settings and processing controls. Configuration is validated with Zod; logs are structured with Pino.
+The application separates the Gmail client, classifier, pipeline, and persistent state behind testable interfaces. In the local single-user setup, the dashboard and poller run as separate containers and share local state. The hosted beta uses separate account-scoped access, settings and processing controls. Configuration is validated with Zod; logs are structured with Pino. See the [architecture and synthetic demo screenshot](docs/architecture.md).
 
 Vitest exercises the pipeline offline using fake mail and classifier implementations, with mocked Gmail and Azure clients. Tests cover dry-run behavior, idempotency, retry and quota handling, call limits, configuration validation, and model output validation.
 

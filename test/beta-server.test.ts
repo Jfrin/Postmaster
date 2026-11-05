@@ -9,18 +9,38 @@ const origin = 'https://beta.example.com';
 const now = Date.parse('2026-11-04T10:00:00Z');
 const csrf = 'z'.repeat(64);
 const sessions: Record<string, BetaSession> = {
-  admin: { subject: 'admin-sub', verifiedEmail: 'admin@example.com', csrfToken: csrf },
-  wrongEmail: { subject: 'admin-sub', verifiedEmail: 'other@example.com', csrfToken: csrf },
-  wrongSubject: { subject: 'alice-sub', verifiedEmail: 'admin@example.com', csrfToken: csrf },
-  alice: { subject: 'alice-sub', verifiedEmail: 'alice@example.com', csrfToken: csrf },
-  bob: { subject: 'bob-sub', verifiedEmail: 'bob@example.com', csrfToken: csrf },
+  admin: {
+    subject: 'admin-sub',
+    verifiedEmail: 'admin@example.com',
+    csrfToken: csrf,
+  },
+  wrongEmail: {
+    subject: 'admin-sub',
+    verifiedEmail: 'other@example.com',
+    csrfToken: csrf,
+  },
+  wrongSubject: {
+    subject: 'alice-sub',
+    verifiedEmail: 'admin@example.com',
+    csrfToken: csrf,
+  },
+  alice: {
+    subject: 'alice-sub',
+    verifiedEmail: 'alice@example.com',
+    csrfToken: csrf,
+  },
+  bob: {
+    subject: 'bob-sub',
+    verifiedEmail: 'bob@example.com',
+    csrfToken: csrf,
+  },
 };
 let store: BetaAccessStore;
 let server: Server;
 let base: string;
 
 beforeEach(async () => {
-  store = new BetaAccessStore(':memory:');
+  store = new BetaAccessStore(':memory:', Buffer.alloc(32, 42));
   store.bootstrapAdmin('admin-sub');
   server = createBetaServer({
     store,
@@ -48,51 +68,64 @@ function request(
   body?: unknown,
   extra: Record<string, string> = {},
 ) {
-  return new Promise<{ status: number; json: () => Promise<unknown>; text: () => Promise<string> }>(
-    (resolve, reject) => {
-      const req = httpRequest(
-        `${base}${path}`,
-        {
-          method,
-          headers: {
-            Host: 'beta.example.com',
-            ...(who ? { Cookie: `sid=${who}` } : {}),
-            ...(method !== 'GET'
-              ? { Origin: origin, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' }
-              : {}),
-            ...extra,
-          },
+  return new Promise<{
+    status: number;
+    json: () => Promise<unknown>;
+    text: () => Promise<string>;
+  }>((resolve, reject) => {
+    const req = httpRequest(
+      `${base}${path}`,
+      {
+        method,
+        headers: {
+          Host: 'beta.example.com',
+          ...(who ? { Cookie: `sid=${who}` } : {}),
+          ...(method !== 'GET'
+            ? {
+                Origin: origin,
+                'X-CSRF-Token': csrf,
+                'Content-Type': 'application/json',
+              }
+            : {}),
+          ...extra,
         },
-        (res) => {
-          const chunks: Buffer[] = [];
-          res.on('data', (chunk: Buffer) => chunks.push(chunk));
-          res.on('end', () => {
-            const text = Buffer.concat(chunks).toString('utf8');
-            resolve({
-              status: res.statusCode ?? 0,
-              text: async () => text,
-              json: async () => JSON.parse(text) as unknown,
-            });
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          resolve({
+            status: res.statusCode ?? 0,
+            text: async () => text,
+            json: async () => JSON.parse(text) as unknown,
           });
-          res.on('error', reject);
-        },
-      );
-      req.on('error', reject);
-      if (body !== undefined) req.write(JSON.stringify(body));
-      req.end();
-    },
-  );
+        });
+        res.on('error', reject);
+      },
+    );
+    req.on('error', reject);
+    if (body !== undefined) req.write(JSON.stringify(body));
+    req.end();
+  });
 }
 
 describe('unwired beta request and admin server', () => {
   it('denies missing sessions, spoofed identity headers, and invalid hosts', async () => {
     expect((await request('/', null)).status).toBe(401);
     expect(
-      (await request('/api/session', null, 'GET', undefined, { 'X-Forwarded-User': 'admin-sub' }))
-        .status,
+      (
+        await request('/api/session', null, 'GET', undefined, {
+          'X-Forwarded-User': 'admin-sub',
+        })
+      ).status,
     ).toBe(401);
     expect(
-      (await request('/', 'admin', 'GET', undefined, { Host: 'evil.example.com' })).status,
+      (
+        await request('/', 'admin', 'GET', undefined, {
+          Host: 'evil.example.com',
+        })
+      ).status,
     ).toBe(403);
     const html = await (await request('/', 'alice')).text();
     expect(html).toContain('Account');
@@ -116,9 +149,13 @@ describe('unwired beta request and admin server', () => {
       expect(await forbidden.text()).toContain('This account does not have administrator access');
       expect((await request('/api/admin/metrics', who)).status).toBe(403);
       expect((await request('/api/admin/requests', who)).status).toBe(403);
-      expect((await request('/api/admin/deny', who, 'POST', { subject: 'alice-sub' })).status).toBe(
-        403,
-      );
+      expect(
+        (
+          await request('/api/admin/deny', who, 'POST', {
+            subject: 'alice-sub',
+          })
+        ).status,
+      ).toBe(403);
     }
     const page = await request('/admin', 'admin');
     expect(page.status).toBe(200);
@@ -129,7 +166,11 @@ describe('unwired beta request and admin server', () => {
 
   it('allows a user to request access only for their verified session identity', async () => {
     expect(
-      (await request('/api/access/request', 'alice', 'POST', { subject: 'bob-sub' })).status,
+      (
+        await request('/api/access/request', 'alice', 'POST', {
+          subject: 'bob-sub',
+        })
+      ).status,
     ).toBe(400);
     expect(store.ownRequest('bob-sub')).toBeNull();
     expect((await request('/api/access/request', 'alice', 'POST', {})).status).toBe(200);
@@ -146,7 +187,7 @@ describe('unwired beta request and admin server', () => {
     expect(self.request.subject).toBe('alice-sub');
   });
 
-  it('accepts public applications but keeps them unverified and protects decisions', async () => {
+  it('fails closed without notification delivery and preserves legacy applications and decisions', async () => {
     expect((await request('/apply', null)).status).toBe(200);
     expect((await request('/api/apply', null, 'POST', { email: 'bad' })).status).toBe(400);
     expect(
@@ -161,16 +202,20 @@ describe('unwired beta request and admin server', () => {
       ).status,
     ).toBe(403);
     expect((await request('/api/apply', null, 'POST', { email: 'Alice@gmail.com' })).status).toBe(
-      200,
+      503,
     );
-    expect((await request('/api/apply', null, 'POST', { email: 'alice@gmail.com' })).status).toBe(
-      200,
-    );
+    expect(store.submitApplication('Alice@gmail.com', now)).toBe(true);
     expect((await request('/api/admin/applications', null)).status).toBe(401);
     expect((await request('/api/admin/applications', 'alice')).status).toBe(403);
     expect((await request('/api/admin/applications', 'wrongEmail')).status).toBe(403);
     expect(await (await request('/api/admin/applications', 'admin')).json()).toMatchObject([
-      { email: 'alice@gmail.com', status: 'pending', subject: null, dailyLimit: 100 },
+      {
+        email: 'alice@gmail.com',
+        status: 'pending',
+        subject: null,
+        dailyLimit: 100,
+        emailVerifiedAt: null,
+      },
     ]);
     const approval = {
       email: 'alice@gmail.com',
@@ -207,11 +252,126 @@ describe('unwired beta request and admin server', () => {
     ).toBe(200);
     expect(store.isApplicationAdmitted('alice-sub', 'alice@gmail.com', now)).toBe(false);
     expect(store.ownRequest('alice-sub')?.status).toBe('denied');
+    expect(await (await request('/api/admin/notifications', 'admin')).json()).toMatchObject({
+      enabled: false,
+      pending: 0,
+      failed: 0,
+    });
+  });
+
+  it('queues notifications only when enabled and protects delivery status and retry', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createBetaServer({
+      store,
+      origin,
+      notificationsEnabled: true,
+      adminIdentity: { subject: 'admin-sub', email: 'admin@example.com' },
+      now: () => now,
+      authenticate: async (req) => sessions[req.headers.cookie?.replace(/^sid=/, '') ?? ''] ?? null,
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    expect(await (await request('/apply', null)).text()).toContain('Decision emails are sent');
+    expect((await request('/api/apply', null, 'POST', { email: 'alice@gmail.com' })).status).toBe(
+      200,
+    );
+    expect((await request('/api/admin/notifications', 'alice')).status).toBe(403);
+    expect(await (await request('/api/admin/notifications', 'admin')).json()).toMatchObject({
+      enabled: true,
+      pending: 1,
+      failed: 0,
+    });
+    expect(store.listApplications('admin-sub')).toHaveLength(0);
+    expect(
+      (
+        await request(
+          '/api/apply/verify',
+          null,
+          'POST',
+          { email: 'alice@gmail.com', code: '00000000' },
+          { Origin: 'https://evil.example.com' },
+        )
+      ).status,
+    ).toBe(403);
+    const notice = store.claimNotification(now, 'v'.repeat(24))!;
+    expect(notice.kind).toBe('verification');
+    store.finishNotification(notice.id, 'v'.repeat(24), now, true);
+    expect(
+      (
+        await request('/api/apply/verify', null, 'POST', {
+          email: 'alice@gmail.com',
+          code: notice.verificationCode,
+        })
+      ).status,
+    ).toBe(200);
+    expect(store.listApplications('admin-sub')).toMatchObject([
+      { email: 'alice@gmail.com', emailVerifiedAt: now },
+    ]);
+    expect(
+      (
+        await request('/api/admin/application-decision', 'admin', 'POST', {
+          email: 'alice@gmail.com',
+          status: 'approved',
+          expiresAt: now + 60_000,
+          dailyLimit: 100,
+        })
+      ).status,
+    ).toBe(200);
+    expect(await (await request('/api/admin/notifications', 'admin')).json()).toMatchObject({
+      pending: 2,
+    });
+    expect(
+      (
+        await request('/api/admin/notifications/retry', 'alice', 'POST', {
+          id: 1,
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request(
+          '/api/admin/notifications/retry',
+          'admin',
+          'POST',
+          { id: 1 },
+          { 'X-CSRF-Token': 'wrong' },
+        )
+      ).status,
+    ).toBe(403);
+  });
+
+  it('checks code expiry after reading the verification request body', async () => {
+    store.requestApplicationVerification('alice@gmail.com', now);
+    const notice = store.claimNotification(now, 'v'.repeat(24))!;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    let calls = 0;
+    server = createBetaServer({
+      store,
+      origin,
+      notificationsEnabled: true,
+      now: () => (calls++ === 0 ? now : now + 1_800_000),
+      authenticate: async () => null,
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    expect(
+      (
+        await request('/api/apply/verify', null, 'POST', {
+          email: 'alice@gmail.com',
+          code: notice.verificationCode,
+        })
+      ).status,
+    ).toBe(400);
+    expect(store.listApplications('admin-sub')).toHaveLength(0);
   });
 
   it('requires admin authorization, exact origin, and CSRF tokens for decisions', async () => {
     store.requestAccess('alice-sub', 'alice@example.com', now);
-    const payload = { subject: 'alice-sub', expiresAt: now + 60_000, dailyLimit: 7 };
+    const payload = {
+      subject: 'alice-sub',
+      expiresAt: now + 60_000,
+      dailyLimit: 7,
+    };
     expect((await request('/api/admin/requests', 'alice')).status).toBe(403);
     expect((await request('/api/admin/metrics', 'alice')).status).toBe(403);
     expect((await request('/api/admin/approve', 'alice', 'POST', payload)).status).toBe(403);
@@ -223,8 +383,11 @@ describe('unwired beta request and admin server', () => {
       ).status,
     ).toBe(403);
     expect(
-      (await request('/api/admin/approve', 'admin', 'POST', payload, { 'X-CSRF-Token': 'wrong' }))
-        .status,
+      (
+        await request('/api/admin/approve', 'admin', 'POST', payload, {
+          'X-CSRF-Token': 'wrong',
+        })
+      ).status,
     ).toBe(403);
     expect(
       (
@@ -237,6 +400,12 @@ describe('unwired beta request and admin server', () => {
     expect((await request('/api/admin/approve', 'admin', 'POST', payload)).status).toBe(200);
     expect(store.isActive('alice-sub', now)).toBe(true);
     expect(store.reserveRead('alice-sub', now)).toBe(1);
+    expect(await (await request('/api/session?subject=bob-sub', 'alice')).json()).toMatchObject({
+      usage: { attempts: 1, limit: 7 },
+    });
+    expect(await (await request('/api/session?subject=alice-sub', 'bob')).json()).toMatchObject({
+      usage: null,
+    });
     expect(await (await request('/api/admin/metrics', 'admin')).json()).toEqual({
       pending: 0,
       active: 1,
@@ -251,7 +420,11 @@ describe('unwired beta request and admin server', () => {
       { subject: 'alice-sub', dailyLimit: 7, attempts: 1 },
     ]);
     expect(
-      (await request('/api/admin/deny', 'admin', 'POST', { subject: 'alice-sub' })).status,
+      (
+        await request('/api/admin/deny', 'admin', 'POST', {
+          subject: 'alice-sub',
+        })
+      ).status,
     ).toBe(200);
     expect(store.isActive('alice-sub', now)).toBe(false);
   });
@@ -267,8 +440,12 @@ describe('unwired beta request and admin server', () => {
     expect((await request('/api/config', 'admin')).status).toBe(404);
     expect((await request('/api/control', 'admin', 'POST', {})).status).toBe(404);
     expect(
-      (await request('/api/admin/deny', 'admin', 'POST', { subject: 'alice-sub', extra: true }))
-        .status,
+      (
+        await request('/api/admin/deny', 'admin', 'POST', {
+          subject: 'alice-sub',
+          extra: true,
+        })
+      ).status,
     ).toBe(400);
   });
 });
