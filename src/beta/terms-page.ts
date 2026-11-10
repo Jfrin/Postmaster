@@ -8,7 +8,7 @@ import {
 export const TERMS_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Postmaster terms of service</title><style>${PUBLIC_DOCUMENT_STYLE}</style></head><body>${PUBLIC_DOCUMENT_HEADER}<main class="document">
-<div class="document-heading"><span class="eyebrow">The details · Terms</span><h1>Postmaster terms of service</h1></div>
+<div class="document-heading"><span class="eyebrow">Terms of Service</span><h1>Postmaster terms of service</h1></div>
 <p>Postmaster is a closed beta operated by Jose Andres Ofrin in the Philippines. Contact <a href="mailto:joseofrin@gmail.com">joseofrin@gmail.com</a> with questions.</p>
 <h2>Using the beta</h2>
 <p>Access requires approval. You may only connect a Google account you are authorized to use and must comply with applicable law and Google's terms. Do not misuse the service, attempt to access another person's data without permission, or interfere with its operation. The operator may suspend or end beta access or change or discontinue the service.</p>

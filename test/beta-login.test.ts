@@ -74,6 +74,8 @@ describe('identity login integration with a simulated Google provider', () => {
         expect(landing.body).toContain(`href="${href}"`);
       expect(landing.body).not.toContain('/beta/admin');
       expect(landing.body).toContain('Azure OpenAI');
+      expect(landing.body).toContain('Gmail and Google Workspace accounts');
+      expect(landing.body).toContain('Other email providers are not supported');
       expect(landing.body).toContain('Dry run records decisions without changing Gmail');
       expect(landing.body).toContain('does not connect to Gmail or use Azure OpenAI');
       const privacy = await send(base, '/privacy');
@@ -90,6 +92,7 @@ describe('identity login integration with a simulated Google provider', () => {
       expect(terms.status).toBe(200);
       expect(terms.headers['content-type']).toContain('text/html');
       expect(terms.body).toContain('Postmaster terms of service');
+      expect(terms.body).toContain('<span class="eyebrow">Terms of Service</span>');
       expect(terms.body).toContain('Jose Andres Ofrin');
       expect(terms.body).toContain('Philippines');
       expect(terms.body).toContain('href="/privacy"');
